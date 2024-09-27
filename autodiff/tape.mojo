@@ -94,12 +94,12 @@ struct Tape[width: Int = 1, type: DType = DType.float32](Sized):
     fn __len__(self) -> Int:
         return self._tail[] + 1
 
-    # @always_inline("nodebug")
-    # fn free(self):
-    #     self._data.free()
-    #     self._size.free()
-    #     self._tail.free()
-    #     self._adjoints.free()
+    @always_inline("nodebug")
+    fn free(self):
+        self._data.free()
+        self._size.free()
+        self._tail.free()
+        self._adjoints.free()
 
     fn print(self):
         print(" Position | Node Info ")
