@@ -25,7 +25,44 @@ The simulation which includes adjoint calculations exhibits a 3-4x slow down due
 
 ## Some Volatility Modelling and Sensitivities
 
-SVI volatility model from Apple stock data. Fit curve and get polynomial. Use it in a function to get volatility at each timestep when computing monte carlo paths.
+### SVI
+
+The first local volatility model is a simple one - SVI. In [apple.ipynb](apple.ipynb) the current Apple stock call options data from yfinance are used to fit the SVI parameters $a$, $b$, $\rho$, $\sigma$ and $m$. There parameters are then used in [euro_call_svi.mojo](euro_call_svi.mojo) to price a European Call option of strike 220 with Monte Carlo using the SVI calculated volatility to find the first-order Greeks as well as the SVI parameter sensitivities. The correctness of the price and Greeks can easily be checked with an [online tool](https://quantpie.co.uk/inp/inp_bsm_price_greeks.php).
+
+<!-- ```
+Price:  29.50482177734375
+Delta:  0.64890378713607788
+Theta:  19.051700592041016
+Rho:    86.219757080078125
+
+SVI params sensitivities:
+a:      169.47048950195312
+b:      1087.1392822265625
+rho:    -0.32143396139144897
+m:      0.24952980875968933
+sigma:  0.0038893709424883127
+``` -->
+
+
+|Param|Analytical Value|MC+AAD Value|
+|-----|----------------|----------------|
+|Price|29.5669|29.5048|
+|$\Delta$|0.6487|0.6489|
+|$\theta$|-19.1122|-19.0517|
+|$\rho$|86.1373|86.2198|
+
+
+|SVI param|Sensitivity|
+|-----|----------------|
+|a|169.44705|
+|b|1087.1393|
+|$\rho$|-0.3214|
+|m|0.2495|
+|$\sigma$|0.0039|
+
+### Local Volatility
+
+To really showcase the beenfits of AAD, a local volatility model is used and all X local vega values are calculated in only Yx the time it takes to evaluate the primal Monte Carlo simulation.
 
 ## References
 

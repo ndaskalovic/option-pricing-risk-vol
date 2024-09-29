@@ -147,6 +147,13 @@ struct Number[width: Int = 1, type: DType = DType.float32](Stringable):
         self.tape.push_back(n)
         return Number[width, type](self.value / rhs, self.tape, False)
 
+
+    @always_inline("nodebug")
+    fn __truediv__(self, rhs: SIMD[type, width]) -> Number[width, type]:
+        var n = Node[width, type](1, self.idx, 0, (1.0 / rhs).cast[type](), 0.0)
+        self.tape.push_back(n)
+        return Number[width, type](self.value / rhs, self.tape, False)
+
     @always_inline("nodebug")
     fn __pow__(self, rhs: FloatLiteral) -> Number[width, type]:
         var n = Node[width, type](
