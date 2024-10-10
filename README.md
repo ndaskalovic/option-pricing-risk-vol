@@ -67,7 +67,7 @@ Dupire local vol WIP
 
 ## References
 
-[1] Gatheral, J. and Jacquier, A. (2013) ‘Arbitrage-free SVI volatility surfaces’, Quantitative Finance, 14(1), pp. 59–71.
-[2] Giles, M.B., & Glasserman, P. (2005). Smoking Adjoints: fast evaluation of Greeks in Monte Carlo calculations.
-[3] Savine, Antoine. (2019). Modern Computational Finance : AAD and Parallel Simulations. 1st edition. Hoboken, New Jersey: Wiley.
-[4] Griewank, A., & Walther, A. (2000). Evaluating derivatives - principles and techniques of algorithmic differentiation, Second Edition. Frontiers in applied mathematics.
+- [1] Gatheral, J. and Jacquier, A. (2013) ‘Arbitrage-free SVI volatility surfaces’, Quantitative Finance, 14(1), pp. 59–71.
+- [2] Giles, M.B., & Glasserman, P. (2005). Smoking Adjoints: fast evaluation of Greeks in Monte Carlo calculations.
+- [3] Savine, Antoine. (2019). Modern Computational Finance : AAD and Parallel Simulations. 1st edition. Hoboken, New Jersey: Wiley.
+- [4] Griewank, A., & Walther, A. (2000). Evaluating derivatives - principles and techniques of algorithmic differentiation, Second Edition. Frontiers in applied mathematics.
