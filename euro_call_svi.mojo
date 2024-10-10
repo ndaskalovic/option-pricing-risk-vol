@@ -49,11 +49,12 @@ fn svi_vol[width: Int, type: DType](
 
 fn main():
     tape = Tape[width, type]()
+    # option params
     s0 = Number[width, type](227.7899932861328, tape)
     r = Number[width, type](0.04, tape)
     k = Number[width, type](220, tape)
     T = Number[width, type](0.7287671233, tape)
-
+    # fitted SVI params
     a = Number[width, type](5.73431376e-02, tape)
     b = Number[width, type](6.59987208e-04, tape)
     rho = Number[width, type](-1.23157254, tape)

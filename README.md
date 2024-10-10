@@ -10,18 +10,18 @@ As an extension to these initial results, I implemented a simply SVI volatility 
 
 ## Speeding up Monte Carlo Option Pricing
 
-I priced a vanilla European call using the Black Scholes model and 200,000 Monte Carlo paths across weekly time steps for the sake of complexity. The test was ran on a Ryzen 9 5900x which has AVX2, so theoretically space for 8 32-bit floats in its registers. The actual speed up achieved is **6.7x**.
+I priced a vanilla European call using the Black Scholes model and 200,000 Monte Carlo paths across weekly time steps for the sake of complexity. The test was ran on a Ryzen 9 5900x which supports AVX2, so theoretically has space for eight 32-bit floats in its registers. The actual speed up achieved is **6.7x**.
 
 
 ![](simd_speedup_raw.png)
 
 ## Fast Risk
 
-Optimisations such as [pathwise adjoints]() are implemented to reduced memory consumption and improve performance. Similar overall performance improvemetns can be seen when pricing the European option and calculating the first-order Greeks (Delta, Rho, Theta, Vega). A maximum **8.1x** speed up is achieved here.
+Optimisations such as pathwise adjoints [2] are implemented to reduced memory consumption and improve performance. Similar overall performance improvemetns can be seen when pricing the European option and calculating the first-order Greeks (Delta, Rho, Theta, Vega). A maximum **8.1x** speed up is achieved here. This is the theoretical maximum that can be achieved on this processor and is due to the fact that the computational overhead of AAD slows the program down enough to escape potential I/O bottlenecks.
 
 ![](simd_speedup_aad.png)
 
-The simulation which includes adjoint calculations exhibits a 3-4x slow down due to these extra calculations as well as memory access overhead.
+This simulation with adjoint calculations exhibits a 3-4x slow down which matches the upper bound given in [4].
 
 ## Some Volatility Modelling and Sensitivities
 
@@ -62,10 +62,12 @@ sigma:  0.0038893709424883127
 
 ### Local Volatility
 
-To really showcase the beenfits of AAD, a local volatility model is used and all X local vega values are calculated in only Yx the time it takes to evaluate the primal Monte Carlo simulation.
+Dupire local vol WIP
+<!-- To really showcase the beenfits of AAD, a local volatility model is used and all X local vega values are calculated in only Yx the time it takes to evaluate the primal Monte Carlo simulation. -->
 
 ## References
 
-SVI paper
-Glasserman pathwise adjoints
-Antoine Savine book
+[1] Gatheral, J. and Jacquier, A. (2013) ‘Arbitrage-free SVI volatility surfaces’, Quantitative Finance, 14(1), pp. 59–71.
+[2] Giles, M.B., & Glasserman, P. (2005). Smoking Adjoints: fast evaluation of Greeks in Monte Carlo calculations.
+[3] Savine, Antoine. (2019). Modern Computational Finance : AAD and Parallel Simulations. 1st edition. Hoboken, New Jersey: Wiley.
+[4] Griewank, A., & Walther, A. (2000). Evaluating derivatives - principles and techniques of algorithmic differentiation, Second Edition. Frontiers in applied mathematics.
