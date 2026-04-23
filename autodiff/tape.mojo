@@ -18,7 +18,13 @@ from std.memory import memcpy, memset_zero
 
 
 struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable, Sized):
-    var _data: UnsafePointer[Node[Self.width, Self.type], MutExternalOrigin]
+    # Topology arrays (frozen after compile)
+    var _num_args: UnsafePointer[Int, MutExternalOrigin]
+    var _idx1: UnsafePointer[Int, MutExternalOrigin]
+    var _idx2: UnsafePointer[Int, MutExternalOrigin]
+    # Derivative arrays (mutable per path)
+    var _der1: UnsafePointer[SIMD[Self.type, Self.width], MutExternalOrigin]
+    var _der2: UnsafePointer[SIMD[Self.type, Self.width], MutExternalOrigin]
     var _adjoints: UnsafePointer[SIMD[Self.type, Self.width], MutExternalOrigin]
     var _size: UnsafePointer[Int, MutExternalOrigin]
     var _tail: UnsafePointer[Int, MutExternalOrigin]
@@ -31,7 +37,11 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
 
     @always_inline("nodebug")
     def __init__(out self, size: Int = 100_000):
-        self._data = alloc[Node[Self.width, Self.type]](size)
+        self._num_args = alloc[Int](size)
+        self._idx1 = alloc[Int](size)
+        self._idx2 = alloc[Int](size)
+        self._der1 = alloc[SIMD[Self.type, Self.width]](size)
+        self._der2 = alloc[SIMD[Self.type, Self.width]](size)
         self._size = alloc[Int](1)
         self._tail = alloc[Int](1)
         self._mark = alloc[Int](1)
@@ -52,11 +62,18 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
 
     @always_inline("nodebug")
     def __setitem__(self, idx: Int, node: Node[Self.width, Self.type]):
-        self._data[idx] = node
+        self._num_args[idx] = node.numArg
+        self._idx1[idx] = node.idx1
+        self._idx2[idx] = node.idx2
+        self._der1[idx] = node.der1
+        self._der2[idx] = node.der2
 
     @always_inline("nodebug")
     def __getitem__(self, idx: Int) -> Node[Self.width, Self.type]:
-        return self._data[idx]
+        return Node[Self.width, Self.type](
+            self._num_args[idx], self._idx1[idx], self._idx2[idx],
+            self._der1[idx], self._der2[idx]
+        )
 
     @always_inline("nodebug")
     def get_tail(self) -> Int:
@@ -93,18 +110,15 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
     @always_inline("nodebug")
     def push_back(self, node: Node[Self.width, Self.type]):
         if self._compiled[]:
-            # Replay mode: only overwrite derivatives at pre-known position
+            # Replay mode: SoA — only write derivatives, topology is frozen
             self._replay_idx[] += 1
             var idx = self._replay_idx[]
-            var existing = self._data[idx]
-            self._data[idx] = Node[Self.width, Self.type](
-                existing.numArg, existing.idx1, existing.idx2,
-                node.der1, node.der2
-            )
+            self._der1[idx] = node.der1
+            self._der2[idx] = node.der2
             self._tail[] = idx
             self._total_pushes[] += 1
             return
-        # Recording mode: full push
+        # Recording mode: write everything
         self._tail[] += 1
         self[self._tail[]] = node
         self._total_pushes[] += 1
@@ -117,7 +131,11 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
 
     @always_inline("nodebug")
     def free(self):
-        self._data.free()
+        self._num_args.free()
+        self._idx1.free()
+        self._idx2.free()
+        self._der1.free()
+        self._der2.free()
         self._size.free()
         self._tail.free()
         self._mark.free()
@@ -148,7 +166,7 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
         print(" Position | Node Info ")
         print("----------|-----------")
         for i in range(self._tail[] + 1):
-            print(String.write(i) + " | ", String.write(self._data[i]))
+            print(String.write(i) + " | ", String.write(self[i]))
 
 
     @always_inline("nodebug")
@@ -168,8 +186,11 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
             var adj = self._adjoints[i]
             if (adj == 0).reduce_and():
                 continue
-            var node = self[i]
-            if node.numArg > 0:
-                self._adjoints[node.idx1] = self._adjoints[node.idx1] + (adj * node.der1)
-                if node.numArg > 1:
-                    self._adjoints[node.idx2] = self._adjoints[node.idx2] + (adj * node.der2)
+            # SoA: read directly from separate arrays
+            var na = self._num_args[i]
+            if na > 0:
+                var i1 = self._idx1[i]
+                self._adjoints[i1] = self._adjoints[i1] + (adj * self._der1[i])
+                if na > 1:
+                    var i2 = self._idx2[i]
+                    self._adjoints[i2] = self._adjoints[i2] + (adj * self._der2[i])
