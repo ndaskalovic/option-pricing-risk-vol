@@ -32,6 +32,10 @@ def EuropeanCallOption[W: Int, DT: DType](
         tape.rewind_to_mark()
         psum = psum + payoff
 
+        # After first path, compile the tape — all subsequent paths replay
+        if i == 0:
+            tape.compile()
+
     return psum / nPaths
 
 def svi_vol[width: Int, type: DType](

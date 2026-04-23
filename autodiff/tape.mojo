@@ -26,6 +26,8 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
     var _frozen: Bool
     var _peak_nodes: UnsafePointer[Int, MutExternalOrigin]
     var _total_pushes: UnsafePointer[Int, MutExternalOrigin]
+    var _compiled: UnsafePointer[Bool, MutExternalOrigin]
+    var _replay_idx: UnsafePointer[Int, MutExternalOrigin]
 
     @always_inline("nodebug")
     def __init__(out self, size: Int = 100_000):
@@ -43,6 +45,10 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
         self._total_pushes = alloc[Int](1)
         self._peak_nodes[] = 0
         self._total_pushes[] = 0
+        self._compiled = alloc[Bool](1)
+        self._replay_idx = alloc[Int](1)
+        self._compiled[] = False
+        self._replay_idx[] = 0
 
     @always_inline("nodebug")
     def __setitem__(self, idx: Int, node: Node[Self.width, Self.type]):
@@ -63,13 +69,42 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
     @always_inline("nodebug")
     def rewind_to_mark(self):
         self._tail[] = self._mark[]
+        if self._compiled[]:
+            self._replay_idx[] = self._mark[]
 
     @always_inline("nodebug")
     def set_mark(self):
         self._mark[] = self._tail[]
 
     @always_inline("nodebug")
+    def compile(self):
+        """Freeze tape topology after first path."""
+        self._compiled[] = True
+
+    @always_inline("nodebug")
+    def is_compiled(self) -> Bool:
+        return self._compiled[]
+
+    @always_inline("nodebug")
+    def start_replay(self):
+        """Reset replay counter to mark position for next path."""
+        self._replay_idx[] = self._mark[]
+
+    @always_inline("nodebug")
     def push_back(self, node: Node[Self.width, Self.type]):
+        if self._compiled[]:
+            # Replay mode: only overwrite derivatives at pre-known position
+            self._replay_idx[] += 1
+            var idx = self._replay_idx[]
+            var existing = self._data[idx]
+            self._data[idx] = Node[Self.width, Self.type](
+                existing.numArg, existing.idx1, existing.idx2,
+                node.der1, node.der2
+            )
+            self._tail[] = idx
+            self._total_pushes[] += 1
+            return
+        # Recording mode: full push
         self._tail[] += 1
         self[self._tail[]] = node
         self._total_pushes[] += 1
@@ -89,6 +124,8 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
         self._adjoints.free()
         self._peak_nodes.free()
         self._total_pushes.free()
+        self._compiled.free()
+        self._replay_idx.free()
 
     @always_inline("nodebug")
     def peak_nodes(self) -> Int:
