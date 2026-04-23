@@ -4,7 +4,7 @@
 # Redirect output: mojo run benchmarks/benchmark.mojo > benchmarks/results/run.txt
 
 from autodiff import Number, Tape
-from vanilla_euro_call import EuropeanCallOption, MonteCarloPathSimul, max_mask
+from vanilla_euro_call import EuropeanCallOption
 import std.random
 import time
 

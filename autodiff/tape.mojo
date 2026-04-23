@@ -90,15 +90,19 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
         self._peak_nodes.free()
         self._total_pushes.free()
 
+    @always_inline("nodebug")
     def peak_nodes(self) -> Int:
         return self._peak_nodes[]
 
+    @always_inline("nodebug")
     def total_pushes(self) -> Int:
         return self._total_pushes[]
 
+    @always_inline("nodebug")
     def peak_adjoint_bytes(self) -> Int:
         return self._peak_nodes[] * sizeof[SIMD[Self.type, Self.width]]()
 
+    @always_inline("nodebug")
     def reset_metrics(self):
         self._peak_nodes[] = 0
         self._total_pushes[] = 0
