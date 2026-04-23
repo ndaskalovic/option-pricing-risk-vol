@@ -14,25 +14,24 @@ algorithm.
 '''
 
 from .node import Node
-from memory import memcpy, memset_zero
+from std.memory import memcpy, memset_zero
 
 
-@register_passable("trivial")
-struct Tape[width: Int = 1, type: DType = DType.float32](Sized):
-    var _data: UnsafePointer[Node[width, type]]
-    var _adjoints: UnsafePointer[SIMD[type, width]]
-    var _size: UnsafePointer[Int]
-    var _tail: UnsafePointer[Int]
-    var _mark: UnsafePointer[Int]
+struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable, Sized):
+    var _data: UnsafePointer[Node[Self.width, Self.type], MutExternalOrigin]
+    var _adjoints: UnsafePointer[SIMD[Self.type, Self.width], MutExternalOrigin]
+    var _size: UnsafePointer[Int, MutExternalOrigin]
+    var _tail: UnsafePointer[Int, MutExternalOrigin]
+    var _mark: UnsafePointer[Int, MutExternalOrigin]
     var _frozen: Bool
 
     @always_inline("nodebug")
-    fn __init__(inout self, size: Int = 100_000):
-        self._data = UnsafePointer[Node[width, type]].alloc(size)
-        self._size = UnsafePointer[Int].alloc(1)
-        self._tail = UnsafePointer[Int].alloc(1)
-        self._mark = UnsafePointer[Int].alloc(1)
-        self._adjoints = UnsafePointer[SIMD[type, width]].alloc(size)
+    def __init__(out self, size: Int = 100_000):
+        self._data = alloc[Node[Self.width, Self.type]](size)
+        self._size = alloc[Int](1)
+        self._tail = alloc[Int](1)
+        self._mark = alloc[Int](1)
+        self._adjoints = alloc[SIMD[Self.type, Self.width]](size)
         memset_zero(self._adjoints, size)
         self._size[] = size
         self._tail[] = -1
@@ -40,81 +39,60 @@ struct Tape[width: Int = 1, type: DType = DType.float32](Sized):
         self._frozen = False
 
     @always_inline("nodebug")
-    fn __setitem__(self, idx: Int, node: Node[width, type]) -> None:
+    def __setitem__(self, idx: Int, node: Node[Self.width, Self.type]):
         self._data[idx] = node
 
     @always_inline("nodebug")
-    fn __getitem__(self, idx: Int) -> Node[width, type]:
+    def __getitem__(self, idx: Int) -> Node[Self.width, Self.type]:
         return self._data[idx]
 
     @always_inline("nodebug")
-    fn get_tail(self) -> Int:
+    def get_tail(self) -> Int:
         return self._tail[]
 
-    # @always_inline("nodebug")
-    # fn freeze(inout self) -> None:
-    #     self._frozen = True
-
-    # @always_inline("nodebug")
-    # fn unfreeze(inout self) -> None:
-    #     self._frozen = False
-
-    # @always_inline("nodebug")
-    # fn set_tail(self, tail: Int) -> None:
-    #     self._tail.store(tail)
-
     @always_inline("nodebug")
-    fn get_size(self) -> Int:
+    def get_size(self) -> Int:
         return self._size[]
 
-    # @always_inline("nodebug")
-    # fn set_size(self, size: Int) -> None:
-    #     self._size.store(size)
-
-    # @always_inline("nodebug")
-    # fn rewind(self, idx: Int) -> None:
-    #     self._tail.store(idx)
-
     @always_inline("nodebug")
-    fn rewind_to_mark(self) -> None:
+    def rewind_to_mark(self):
         self._tail[] = self._mark[]
 
     @always_inline("nodebug")
-    fn set_mark(self) -> None:
+    def set_mark(self):
         self._mark[] = self._tail[]
 
     @always_inline("nodebug")
-    fn push_back(self, node: Node[width, type]) -> None:
-        # if self._frozen:
-        #     return
+    def push_back(self, node: Node[Self.width, Self.type]):
         self._tail[] += 1
         self[self._tail[]] = node
 
     @always_inline("nodebug")
-    fn __len__(self) -> Int:
+    def __len__(self) -> Int:
         return self._tail[] + 1
 
     @always_inline("nodebug")
-    fn free(self):
+    def free(self):
         self._data.free()
         self._size.free()
         self._tail.free()
+        self._mark.free()
         self._adjoints.free()
 
-    fn print(self):
+    def print(self):
         print(" Position | Node Info ")
         print("----------|-----------")
         for i in range(self._tail[] + 1):
-            print(str(i) + " | ", str(self._data[i]))
+            print(String.write(i) + " | ", String.write(self._data[i]))
 
-    
+
     @always_inline("nodebug")
-    fn adjoint(self, idx: Int) -> SIMD[type, width]:
+    def adjoint(self, idx: Int) -> SIMD[Self.type, Self.width]:
         return self._adjoints[idx]
-            
+
 
     @always_inline("nodebug")
-    fn propagate_adjoints(self, idx: Int, start_grad: SIMD[type, width] = 1.0):
+    def propagate_adjoints(self, idx: Int, start_grad: SIMD[Self.type, Self.width] = 1.0):
         memset_zero(
             self._adjoints + self._mark[] + 1, len(self) - self._mark[]
         )
