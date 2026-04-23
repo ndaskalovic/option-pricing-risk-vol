@@ -11,3 +11,4 @@ def main() raises:
     var number3 = number1 * number2
     number3.propagate_adjoints(1)
     print(number1.mean_grad(), number2.mean_grad())
+    tape.free()

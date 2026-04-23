@@ -79,3 +79,5 @@ def main() raises:
     print("rho:   ", rho.mean_grad())
     print("m:     ", m.mean_grad())
     print("sigma: ", sigma.mean_grad())
+    randoms.free()
+    tape.free()
