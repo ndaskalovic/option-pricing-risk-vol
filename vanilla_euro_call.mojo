@@ -1,12 +1,12 @@
 from autodiff import Number, Tape
 import std.random
-import time
+import std.time
 
 comptime width = 8
 comptime type = DType.float32
 
 def max_mask[W: Int, T: DType](arg1: Number[W, T], arg2: SIMD[T,W]) -> SIMD[T,W]:
-    return (arg1.value > arg2).cast[T]()
+    return arg1.value.gt(arg2).select(SIMD[T, W](1), SIMD[T, W](0))
 
 # Simulate a single Monte Carlo path
 def MonteCarloPathSimul[W: Int, DT: DType](
@@ -15,7 +15,7 @@ def MonteCarloPathSimul[W: Int, DT: DType](
     sigma: Number[W, DT],
     T: Number[W, DT],
     nTimeSteps: Int,
-    randoms: UnsafePointer[Float32]
+    randoms: UnsafePointer[Float32, _]
     ) -> Number[W, DT]:
     var dt = T / nTimeSteps
     var path = s0
@@ -35,7 +35,7 @@ def EuropeanCallOption[W: Int, DT: DType](
     K: Number[W, DT],
     nTimeSteps: Int,
     nPaths: Int,
-    randoms: UnsafePointer[Float32]
+    randoms: UnsafePointer[Float32, _]
     ) -> Number[W, DT]:
 
     var tape = s0.tape
@@ -45,7 +45,7 @@ def EuropeanCallOption[W: Int, DT: DType](
         var path = MonteCarloPathSimul(s0, r, sigma, T, nTimeSteps, randoms + i*nTimeSteps)
         var payoff = (path-K) * max_mask[W, DT](path-K, 0) * (-r * T).expon()
         # print(payoff.value)
-        payoff.propagate_adjoints((1/(nPaths)).cast[DT]())
+        payoff.propagate_adjoints(Scalar[DT](1.0 / Float64(nPaths)))
         tape.rewind_to_mark()
         psum = psum + payoff
 
@@ -68,9 +68,9 @@ def run[width: Int, type: DType]() -> Float64:
     var nPaths = 200000 // width
     var randoms = alloc[Float32](nTimeSteps*nPaths)
     std.random.randn[DType.float32](randoms, nTimeSteps*nPaths)
-    var start = time.now()
+    var start = std.time.perf_counter_ns()
     var optionPrice = EuropeanCallOption(s0, r, sigma, T, K, nTimeSteps, nPaths, randoms)
-    var end = time.now()
+    var end = std.time.perf_counter_ns()
     print(optionPrice.mean(), flush=True)
     _ = optionPrice
     print(optionPrice.mean(), tape.get_tail(), s0.mean_grad(), r.mean_grad(), sigma.mean_grad(), T.mean_grad(), K.mean_grad())
@@ -80,7 +80,7 @@ def run[width: Int, type: DType]() -> Float64:
     _ = T.mean_grad()
     randoms.free()
     tape.free()
-    return (end-start) * 1e-9
+    return Float64(Int(end - start)) * 1e-9
 
 def bench[width: Int, type: DType]():
     var total = 0.0

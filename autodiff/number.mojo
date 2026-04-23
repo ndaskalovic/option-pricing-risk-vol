@@ -66,11 +66,11 @@ struct Number[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassab
 
     @always_inline("nodebug")
     def __gt__(self, rhs: Number[Self.width, Self.type]) -> SIMD[DType.bool, Self.width]:
-        return self.value > rhs.value
+        return self.value.gt(rhs.value)
 
     @always_inline("nodebug")
     def __lt__(self, rhs: Number[Self.width, Self.type]) -> SIMD[DType.bool, Self.width]:
-        return self.value < rhs.value
+        return self.value.lt(rhs.value)
 
     @always_inline("nodebug")
     def __sub__(self, rhs: Number[Self.width, Self.type]) -> Number[Self.width, Self.type]:
@@ -122,9 +122,10 @@ struct Number[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassab
 
     @always_inline("nodebug")
     def __truediv__(self, rhs: Int) -> Number[Self.width, Self.type]:
-        var n = Node[Self.width, Self.type](1, self.idx, 0, (1.0 / rhs).cast[Self.type](), 0.0)
+        var rhs_f = SIMD[Self.type, Self.width](rhs)
+        var n = Node[Self.width, Self.type](1, self.idx, 0, 1.0 / rhs_f, 0.0)
         self.tape.push_back(n)
-        return Number[Self.width, Self.type](self.value / rhs, self.tape, False)
+        return Number[Self.width, Self.type](self.value / rhs_f, self.tape, False)
 
 
     @always_inline("nodebug")
@@ -143,6 +144,7 @@ struct Number[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassab
 
     @always_inline("nodebug")
     def log(self) -> Number[Self.width, Self.type]:
+        comptime assert Self.type.is_floating_point(), "log requires floating-point type"
         var res = log(self.value)
         var n = Node[Self.width, Self.type](1, self.idx, 0, 1.0 / self.value, 0.0)
         self.tape.push_back(n)
@@ -150,6 +152,7 @@ struct Number[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassab
 
     @always_inline("nodebug")
     def expon(self) -> Number[Self.width, Self.type]:
+        comptime assert Self.type.is_floating_point(), "expon requires floating-point type"
         var res = exp(self.value)
         var n = Node[Self.width, Self.type](1, self.idx, 0, res, 0.0)
         self.tape.push_back(n)
@@ -157,6 +160,7 @@ struct Number[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassab
 
     @always_inline("nodebug")
     def sqrt(self) -> Number[Self.width, Self.type]:
+        comptime assert Self.type.is_floating_point(), "sqrt requires floating-point type"
         var res = sqrt(self.value)
         var n = Node[Self.width, Self.type](1, self.idx, 0, 0.5 / res, 0.0)
         self.tape.push_back(n)
@@ -170,10 +174,10 @@ struct Number[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassab
         return self.tape.adjoint(self.idx)
 
     def mean_grad(self) -> SIMD[Self.type, 1]:
-        return self.tape.adjoint(self.idx).reduce_add() / Self.width
+        return self.tape.adjoint(self.idx).reduce_add() / Scalar[Self.type](Self.width)
 
     def mean(self) -> SIMD[Self.type, 1]:
-        return self.value.reduce_add() / Self.width
+        return self.value.reduce_add() / Scalar[Self.type](Self.width)
 
     @always_inline("nodebug")
     def propagate_adjoints(self, starting_grad: SIMD[Self.type, Self.width] = 1.0):

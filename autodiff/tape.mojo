@@ -15,6 +15,7 @@ algorithm.
 
 from .node import Node
 from std.memory import memcpy, memset_zero
+from std.sys.info import size_of
 
 
 struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable, Sized):
@@ -155,7 +156,7 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
 
     @always_inline("nodebug")
     def peak_adjoint_bytes(self) -> Int:
-        return self._peak_nodes[] * sizeof[SIMD[Self.type, Self.width]]()
+        return self._peak_nodes[] * size_of[SIMD[Self.type, Self.width]]()
 
     @always_inline("nodebug")
     def reset_metrics(self):
@@ -184,7 +185,7 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
         for i in range(N, 0, -1):
             # Skip nodes with zero adjoint across all SIMD lanes
             var adj = self._adjoints[i]
-            if (adj == 0).reduce_and():
+            if adj == 0:
                 continue
             # SoA: read directly from separate arrays
             var na = self._num_args[i]

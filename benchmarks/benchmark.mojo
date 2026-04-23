@@ -6,7 +6,7 @@
 from autodiff import Number, Tape
 from vanilla_euro_call import EuropeanCallOption
 import std.random
-import time
+import std.time
 
 comptime SIMD_WIDTH = 64
 comptime FLOAT_TYPE = DType.float32
@@ -39,11 +39,11 @@ def run_benchmark[width: Int, type: DType](nPaths: Int, nTimeSteps: Int):
         std.random.randn[DType.float32](randoms, nTimeSteps * effective_paths)
 
         tape.reset_metrics()
-        var start = time.now()
+        var start = std.time.perf_counter_ns()
         var optionPrice = EuropeanCallOption(s0, r, sigma, T, K, nTimeSteps, effective_paths, randoms)
-        var end = time.now()
+        var end = std.time.perf_counter_ns()
 
-        var elapsed = Float64(end - start) * 1e-9
+        var elapsed = Float64(Int(end - start)) * 1e-9
         total_time += elapsed
 
         # Collect results from the last trial

@@ -17,7 +17,7 @@ def EuropeanCallOption[W: Int, DT: DType](
     sigma: Number[W, DT],
     nTimeSteps: Int,
     nPaths: Int,
-    randoms: UnsafePointer[Float32]
+    randoms: UnsafePointer[Float32, _]
     ) -> Number[W, DT]:
 
     var tape = s0.tape
@@ -28,7 +28,7 @@ def EuropeanCallOption[W: Int, DT: DType](
         var vol = svi_vol[W, DT](a, b, rho, m, sigma, T, K)
         var path = MonteCarloPathSimul(s0, r, vol, T, nTimeSteps, randoms + i*nTimeSteps)
         var payoff = (path-K) * max_mask[W, DT](path-K, 0) * (-r * T).expon()
-        payoff.propagate_adjoints((1/(nPaths)).cast[DT]())
+        payoff.propagate_adjoints(Scalar[DT](1.0 / Float64(nPaths)))
         tape.rewind_to_mark()
         psum = psum + payoff
 
