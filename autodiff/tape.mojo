@@ -17,15 +17,22 @@ from .node import Node
 from std.memory import memcpy, memset_zero
 from std.sys.info import size_of
 
+# Maximum inputs per node (supports fused expression templates up to 4 inputs).
+comptime MAX_NODE_INPUTS = 4
+
 
 struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable, Sized):
     # Topology arrays (frozen after compile)
     var _num_args: UnsafePointer[Int, MutExternalOrigin]
     var _idx1: UnsafePointer[Int, MutExternalOrigin]
     var _idx2: UnsafePointer[Int, MutExternalOrigin]
+    var _idx3: UnsafePointer[Int, MutExternalOrigin]
+    var _idx4: UnsafePointer[Int, MutExternalOrigin]
     # Derivative arrays (mutable per path)
     var _der1: UnsafePointer[SIMD[Self.type, Self.width], MutExternalOrigin]
     var _der2: UnsafePointer[SIMD[Self.type, Self.width], MutExternalOrigin]
+    var _der3: UnsafePointer[SIMD[Self.type, Self.width], MutExternalOrigin]
+    var _der4: UnsafePointer[SIMD[Self.type, Self.width], MutExternalOrigin]
     var _adjoints: UnsafePointer[SIMD[Self.type, Self.width], MutExternalOrigin]
     var _size: UnsafePointer[Int, MutExternalOrigin]
     var _tail: UnsafePointer[Int, MutExternalOrigin]
@@ -41,13 +48,17 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
         self._num_args = alloc[Int](size)
         self._idx1 = alloc[Int](size)
         self._idx2 = alloc[Int](size)
+        self._idx3 = alloc[Int](size)
+        self._idx4 = alloc[Int](size)
         self._der1 = alloc[SIMD[Self.type, Self.width]](size)
         self._der2 = alloc[SIMD[Self.type, Self.width]](size)
+        self._der3 = alloc[SIMD[Self.type, Self.width]](size)
+        self._der4 = alloc[SIMD[Self.type, Self.width]](size)
+        self._adjoints = alloc[SIMD[Self.type, Self.width]](size)
+        memset_zero(self._adjoints, size)
         self._size = alloc[Int](1)
         self._tail = alloc[Int](1)
         self._mark = alloc[Int](1)
-        self._adjoints = alloc[SIMD[Self.type, Self.width]](size)
-        memset_zero(self._adjoints, size)
         self._size[] = size
         self._tail[] = -1
         self._mark[] = 0
@@ -109,6 +120,47 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
         self._replay_idx[] = self._mark[]
 
     @always_inline("nodebug")
+    def push_fused(
+        self,
+        indices: InlineArray[Int, MAX_NODE_INPUTS],
+        derivs: InlineArray[SIMD[Self.type, Self.width], MAX_NODE_INPUTS],
+        count: Int,
+    ):
+        """Record a fused multi-input node (up to 4 inputs) using SoA arrays."""
+        if self._compiled[]:
+            self._replay_idx[] += 1
+            var slot = self._replay_idx[]
+            # Replay: only write derivatives, topology is frozen
+            self._der1[slot] = derivs[0]
+            if count > 1:
+                self._der2[slot] = derivs[1]
+            if count > 2:
+                self._der3[slot] = derivs[2]
+            if count > 3:
+                self._der4[slot] = derivs[3]
+            self._tail[] = slot
+            self._total_pushes[] += 1
+            return
+        # Recording mode: write topology + derivatives
+        self._tail[] += 1
+        var slot = self._tail[]
+        self._num_args[slot] = count
+        self._idx1[slot] = indices[0]
+        self._der1[slot] = derivs[0]
+        if count > 1:
+            self._idx2[slot] = indices[1]
+            self._der2[slot] = derivs[1]
+        if count > 2:
+            self._idx3[slot] = indices[2]
+            self._der3[slot] = derivs[2]
+        if count > 3:
+            self._idx4[slot] = indices[3]
+            self._der4[slot] = derivs[3]
+        self._total_pushes[] += 1
+        if self._tail[] + 1 > self._peak_nodes[]:
+            self._peak_nodes[] = self._tail[] + 1
+
+    @always_inline("nodebug")
     def push_back(self, node: Node[Self.width, Self.type]):
         if self._compiled[]:
             # Replay mode: SoA — only write derivatives, topology is frozen
@@ -135,8 +187,12 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
         self._num_args.free()
         self._idx1.free()
         self._idx2.free()
+        self._idx3.free()
+        self._idx4.free()
         self._der1.free()
         self._der2.free()
+        self._der3.free()
+        self._der4.free()
         self._size.free()
         self._tail.free()
         self._mark.free()
@@ -187,11 +243,17 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
             var adj = self._adjoints[i]
             if adj == 0:
                 continue
-            # SoA: read directly from separate arrays
             var na = self._num_args[i]
+            # Unrolled: no loops, direct SoA reads for each input slot
             if na > 0:
                 var i1 = self._idx1[i]
                 self._adjoints[i1] = self._adjoints[i1] + (adj * self._der1[i])
-                if na > 1:
-                    var i2 = self._idx2[i]
-                    self._adjoints[i2] = self._adjoints[i2] + (adj * self._der2[i])
+            if na > 1:
+                var i2 = self._idx2[i]
+                self._adjoints[i2] = self._adjoints[i2] + (adj * self._der2[i])
+            if na > 2:
+                var i3 = self._idx3[i]
+                self._adjoints[i3] = self._adjoints[i3] + (adj * self._der3[i])
+            if na > 3:
+                var i4 = self._idx4[i]
+                self._adjoints[i4] = self._adjoints[i4] + (adj * self._der4[i])
