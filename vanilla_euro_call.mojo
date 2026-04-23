@@ -2,7 +2,7 @@ from autodiff import Number, Tape
 import std.random
 import std.time
 
-comptime width = 8
+comptime width = 32
 comptime type = DType.float32
 
 def max_mask[W: Int, T: DType](arg1: Number[W, T], arg2: SIMD[T,W]) -> SIMD[T,W]:

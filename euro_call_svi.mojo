@@ -2,7 +2,7 @@ from autodiff import Number, Tape
 import std.random
 from vanilla_euro_call import MonteCarloPathSimul, max_mask
 
-comptime width = 8
+comptime width = 32
 comptime type = DType.float32
 
 def EuropeanCallOption[W: Int, DT: DType](

@@ -8,7 +8,7 @@ from vanilla_euro_call import EuropeanCallOption
 import std.random
 import std.time
 
-comptime SIMD_WIDTH = 64
+comptime SIMD_WIDTH = 32
 comptime FLOAT_TYPE = DType.float32
 comptime NUM_TRIALS = 5
 
