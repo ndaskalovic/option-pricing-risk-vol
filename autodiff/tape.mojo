@@ -127,8 +127,12 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
         var N = idx
         self._adjoints[N] = start_grad
         for i in range(N, 0, -1):
+            # Skip nodes with zero adjoint across all SIMD lanes
+            var adj = self._adjoints[i]
+            if (adj == 0).reduce_and():
+                continue
             var node = self[i]
             if node.numArg > 0:
-                self._adjoints[node.idx1] = self._adjoints[node.idx1] + (self._adjoints[i] * node.der1)
+                self._adjoints[node.idx1] = self._adjoints[node.idx1] + (adj * node.der1)
                 if node.numArg > 1:
-                    self._adjoints[node.idx2] = self._adjoints[node.idx2] + (self._adjoints[i] * node.der2)
+                    self._adjoints[node.idx2] = self._adjoints[node.idx2] + (adj * node.der2)
