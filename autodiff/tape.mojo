@@ -24,6 +24,8 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
     var _tail: UnsafePointer[Int, MutExternalOrigin]
     var _mark: UnsafePointer[Int, MutExternalOrigin]
     var _frozen: Bool
+    var _peak_nodes: UnsafePointer[Int, MutExternalOrigin]
+    var _total_pushes: UnsafePointer[Int, MutExternalOrigin]
 
     @always_inline("nodebug")
     def __init__(out self, size: Int = 100_000):
@@ -37,6 +39,10 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
         self._tail[] = -1
         self._mark[] = 0
         self._frozen = False
+        self._peak_nodes = alloc[Int](1)
+        self._total_pushes = alloc[Int](1)
+        self._peak_nodes[] = 0
+        self._total_pushes[] = 0
 
     @always_inline("nodebug")
     def __setitem__(self, idx: Int, node: Node[Self.width, Self.type]):
@@ -66,6 +72,9 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
     def push_back(self, node: Node[Self.width, Self.type]):
         self._tail[] += 1
         self[self._tail[]] = node
+        self._total_pushes[] += 1
+        if self._tail[] + 1 > self._peak_nodes[]:
+            self._peak_nodes[] = self._tail[] + 1
 
     @always_inline("nodebug")
     def __len__(self) -> Int:
@@ -78,6 +87,21 @@ struct Tape[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable
         self._tail.free()
         self._mark.free()
         self._adjoints.free()
+        self._peak_nodes.free()
+        self._total_pushes.free()
+
+    def peak_nodes(self) -> Int:
+        return self._peak_nodes[]
+
+    def total_pushes(self) -> Int:
+        return self._total_pushes[]
+
+    def peak_adjoint_bytes(self) -> Int:
+        return self._peak_nodes[] * sizeof[SIMD[Self.type, Self.width]]()
+
+    def reset_metrics(self):
+        self._peak_nodes[] = 0
+        self._total_pushes[] = 0
 
     def print(self):
         print(" Position | Node Info ")
