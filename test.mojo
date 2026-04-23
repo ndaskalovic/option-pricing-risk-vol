@@ -1,9 +1,9 @@
 from autodiff import Tape, Node, Number
 
 
-alias width = 4
-alias type = DType.float32
-fn main():
+comptime width = 4
+comptime type = DType.float32
+def main() raises:
     var tape = Tape[width, type]()
     var number1 = Number[width, type](4.0, tape)
     var number2 = Number[width, type](6.0, tape)

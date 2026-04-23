@@ -1,15 +1,15 @@
 from autodiff import Number, Tape
-import random
+import std.random
 import time
 
-alias width = 8
-alias type = DType.float32
+comptime width = 8
+comptime type = DType.float32
 
-fn max_mask[W: Int, T: DType](arg1: Number[W, T], arg2: SIMD[T,W]) -> SIMD[T,W]:
+def max_mask[W: Int, T: DType](arg1: Number[W, T], arg2: SIMD[T,W]) -> SIMD[T,W]:
     return (arg1.value > arg2).cast[T]()
 
 # Simulate a single Monte Carlo path
-fn MonteCarloPathSimul[W: Int, DT: DType](
+def MonteCarloPathSimul[W: Int, DT: DType](
     s0: Number[W, DT],
     r: Number[W, DT],
     sigma: Number[W, DT],
@@ -27,7 +27,7 @@ fn MonteCarloPathSimul[W: Int, DT: DType](
     return path
 
 
-fn EuropeanCallOption[W: Int, DT: DType](
+def EuropeanCallOption[W: Int, DT: DType](
     s0: Number[W, DT],
     r: Number[W, DT],
     sigma: Number[W, DT],
@@ -52,7 +52,7 @@ fn EuropeanCallOption[W: Int, DT: DType](
     return psum / nPaths
 
 
-fn run[width: Int, type: DType]() -> Float64:
+def run[width: Int, type: DType]() -> Float64:
     var tape = Tape[width, type]()
     var s0 = Number[width, type](100, tape)
     var r = Number[width, type](0.01, s0.tape)
@@ -62,8 +62,8 @@ fn run[width: Int, type: DType]() -> Float64:
     tape.set_mark()
     var nTimeSteps = 52
     var nPaths = 200000 // width
-    var randoms = UnsafePointer[Float32].alloc(nTimeSteps*nPaths)
-    random.randn[DType.float32](randoms, nTimeSteps*nPaths)
+    var randoms = alloc[Float32](nTimeSteps*nPaths)
+    std.random.randn[DType.float32](randoms, nTimeSteps*nPaths)
     var start = time.now()
     var optionPrice = EuropeanCallOption(s0, r, sigma, T, K, nTimeSteps, nPaths, randoms)
     var end = time.now()
@@ -78,14 +78,14 @@ fn run[width: Int, type: DType]() -> Float64:
     tape.free()
     return (end-start) * 1e-9
 
-fn bench[width: Int, type: DType]() -> None:
+def bench[width: Int, type: DType]():
     var total = 0.0
     for _ in range(10):
         total += run[width, type]()
     print(width, ",", total/10)
 
 
-fn main():
+def main() raises:
     # bench[1, type]()
     # bench[2, type]()
     # bench[4, type]()

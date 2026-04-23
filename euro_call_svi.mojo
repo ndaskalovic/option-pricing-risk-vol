@@ -1,11 +1,11 @@
 from autodiff import Number, Tape
-import random
+import std.random
 from vanilla_euro_call import MonteCarloPathSimul, max_mask
 
-alias width = 8
-alias type = DType.float32
+comptime width = 8
+comptime type = DType.float32
 
-fn EuropeanCallOption[W: Int, DT: DType](
+def EuropeanCallOption[W: Int, DT: DType](
     s0: Number[W, DT],
     r: Number[W, DT],
     T: Number[W, DT],
@@ -34,7 +34,7 @@ fn EuropeanCallOption[W: Int, DT: DType](
 
     return psum / nPaths
 
-fn svi_vol[width: Int, type: DType](
+def svi_vol[width: Int, type: DType](
     a: Number[width, type],
     b: Number[width, type],
     rho: Number[width, type],
@@ -47,28 +47,28 @@ fn svi_vol[width: Int, type: DType](
     return (w/T.value).sqrt()
 
 
-fn main():
-    tape = Tape[width, type]()
+def main() raises:
+    var tape = Tape[width, type]()
     # option params
-    s0 = Number[width, type](227.7899932861328, tape)
-    r = Number[width, type](0.04, tape)
-    k = Number[width, type](220, tape)
-    T = Number[width, type](0.7287671233, tape)
+    var s0 = Number[width, type](227.7899932861328, tape)
+    var r = Number[width, type](0.04, tape)
+    var k = Number[width, type](220, tape)
+    var T = Number[width, type](0.7287671233, tape)
     # fitted SVI params
-    a = Number[width, type](5.73431376e-02, tape)
-    b = Number[width, type](6.59987208e-04, tape)
-    rho = Number[width, type](-1.23157254, tape)
-    m = Number[width, type](2.22873847e+02, tape)
-    sigma = Number[width, type](9.99943135e-02, tape)
-    
+    var a = Number[width, type](5.73431376e-02, tape)
+    var b = Number[width, type](6.59987208e-04, tape)
+    var rho = Number[width, type](-1.23157254, tape)
+    var m = Number[width, type](2.22873847e+02, tape)
+    var sigma = Number[width, type](9.99943135e-02, tape)
+
     tape.set_mark()
 
-    nTimeSteps = 52
-    nPaths = 200000//width
-    randoms = UnsafePointer[Float32].alloc(nTimeSteps*nPaths)
-    random.randn[DType.float32](randoms, nTimeSteps*nPaths)
+    var nTimeSteps = 52
+    var nPaths = 200000//width
+    var randoms = alloc[Float32](nTimeSteps*nPaths)
+    std.random.randn[DType.float32](randoms, nTimeSteps*nPaths)
 
-    price = EuropeanCallOption[width, type](s0, r, T, k, a, b, rho, m, sigma, nTimeSteps, nPaths, randoms)
+    var price = EuropeanCallOption[width, type](s0, r, T, k, a, b, rho, m, sigma, nTimeSteps, nPaths, randoms)
     print("\nPrice: ", price.mean())
     print("Delta: ", s0.mean_grad())
     print("Theta: ", T.mean_grad())
