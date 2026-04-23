@@ -21,7 +21,6 @@ struct Number[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassab
     var value: SIMD[Self.type, Self.width]
     var idx: Int
     var tape: Tape[Self.width, Self.type]
-    comptime null_tape = UnsafePointer[Tape[Self.width, Self.type]].alloc(1)[0]
 
     @always_inline("nodebug")
     def __init__(
