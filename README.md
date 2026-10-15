@@ -99,14 +99,6 @@ All numbers: Apple M5, single core, best of 11–31 runs, price plus every first
 
 `benchmarks/` reproduces these numbers. For profiling it has a line-level PC sampler (`pcsample.py`) and an Apple-Silicon hardware-counter harness (`pmu/`).
 
-**Rust comparison** (`experiments/rust_bench/`), the same MC kernel on identical inputs:
-
-| Variant | Time | vs Mojo |
-|---|---|---|
-| Rust with build-time code generation, `std::simd`, explicit FMA | 0.98 ms | 1.06× |
-| Rust stable, `[f32; 32]` lanes | 1.36 ms | 1.47× |
-| Enzyme (`std::autodiff`) | 1.8 ms | 1.94× |
-
 ## Accuracy
 
 | Check | Result |
@@ -166,7 +158,6 @@ autodiff/ct/       compile-time AAD: ADNum, Kernel, Compiled, Scan, MC engine (m
 models/            GBM call and Asian (MC), SVI call (MC), Black-Scholes European/American (FD)
 tests/             correctness suites
 benchmarks/        timing, PC sampler, hardware counters (pmu/)
-experiments/       Rust comparison benchmark
 vanilla_euro_call.mojo, euro_call_svi.mojo   runtime-tape pricers
 ```
 
