@@ -1,0 +1,14 @@
+[project]
+name = "option-pricing-risk-vol"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = [
+    "mojo==1.1.0",
+    "max==26.6.0",  # max.algorithm.parallelize (moved out of Mojo std in 1.0)
+]
+
+[dependency-groups]
+notebooks = ["numpy", "scipy", "pandas", "matplotlib", "yfinance"]
+
+[tool.uv]
+package = false
