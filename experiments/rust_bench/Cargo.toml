@@ -1,0 +1,24 @@
+[package]
+name = "aadbench"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[features]
+enzyme = []     # nightly + RUSTFLAGS="-Zautodiff=Enable"
+portable = []   # nightly: std::simd lane type
+
+[[bin]]
+name = "codegen"
+path = "src/bin/codegen.rs"
+
+[[bin]]
+name = "enzyme"
+path = "src/bin/enzyme.rs"
+required-features = ["enzyme", "portable"]
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
