@@ -1,6 +1,7 @@
+from std.memory.alloc import unsafe_alloc
 from autodiff import Number, Tape
 import std.random
-from vanilla_euro_call import MonteCarloPathSimul, max_mask
+from vanilla_euro_call import gbm_coeffs, gbm_log_path, discounted_call
 
 comptime width = 32
 comptime type = DType.float32
@@ -17,26 +18,30 @@ def EuropeanCallOption[W: Int, DT: DType](
     sigma: Number[W, DT],
     nTimeSteps: Int,
     nPaths: Int,
-    randoms: UnsafePointer[Float32, _]
+    randoms: Pointer[Float32, _]
     ) -> Number[W, DT]:
 
     var tape = s0.tape
-    var psum = Number[W, DT](0.0, tape)
+    # Path-invariant nodes (SVI vol, GBM coefficients, discount) are recorded once, below the mark
+    var vol = svi_vol[W, DT](a, b, rho, m, sigma, T, K)
+    var c = gbm_coeffs(r, vol, T, nTimeSteps)
+    var disc = (-r * T).expon()
+    tape.set_mark()
+    var psum = SIMD[DT, W](0)
 
     for i in range(nPaths):
-        # vol calculated using SVI model
-        var vol = svi_vol[W, DT](a, b, rho, m, sigma, T, K)
-        var path = MonteCarloPathSimul(s0, r, vol, T, nTimeSteps, randoms + i*nTimeSteps)
-        var payoff = (path-K) * max_mask[W, DT](path-K, 0) * (-r * T).expon()
+        var path = gbm_log_path(s0, c[0], c[1], nTimeSteps, randoms.unsafe_offset(i*nTimeSteps * W))
+        var payoff = discounted_call(path, K, disc)
         payoff.propagate_adjoints(Scalar[DT](1.0 / Float64(nPaths)))
+        psum += payoff.value
         tape.rewind_to_mark()
-        psum = psum + payoff
 
         # After first path, compile the tape — all subsequent paths replay
         if i == 0:
             tape.compile()
 
-    return psum / nPaths
+    tape.propagate_mark_to_start()
+    return Number[W, DT](psum / Scalar[DT](nPaths), tape, push=False)
 
 def svi_vol[width: Int, type: DType](
     a: Number[width, type],
@@ -69,8 +74,8 @@ def main() raises:
 
     var nTimeSteps = 52
     var nPaths = 200000//width
-    var randoms = alloc[Float32](nTimeSteps*nPaths)
-    std.random.randn[DType.float32](randoms, nTimeSteps*nPaths)
+    var randoms = unsafe_alloc[Float32](nTimeSteps*nPaths * width)
+    std.random.randn[DType.float32](randoms, nTimeSteps*nPaths * width)
 
     var price = EuropeanCallOption[width, type](s0, r, T, k, a, b, rho, m, sigma, nTimeSteps, nPaths, randoms)
     print("\nPrice: ", price.mean())
@@ -83,5 +88,5 @@ def main() raises:
     print("rho:   ", rho.mean_grad())
     print("m:     ", m.mean_grad())
     print("sigma: ", sigma.mean_grad())
-    randoms.free()
+    randoms.unsafe_free()
     tape.free()

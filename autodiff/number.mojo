@@ -14,7 +14,7 @@ automatic differentiation as well as SIMD support.
 
 from std.math import log, sqrt, exp
 from .node import Node
-from .tape import Tape
+from .tape import Tape, MAX_NODE_INPUTS
 
 
 struct Number[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassable, Writable):
@@ -169,6 +169,38 @@ struct Number[width: Int = 1, type: DType = DType.float32](TrivialRegisterPassab
     @always_inline("nodebug")
     def __neg__(self) -> Number[Self.width, Self.type]:
         return Number[Self.width, Self.type](SIMD[Self.type, Self.width](0.0), self.tape) - self
+
+    @staticmethod
+    @always_inline("nodebug")
+    def from_partials(
+        value: SIMD[Self.type, Self.width],
+        a: Self, da: SIMD[Self.type, Self.width],
+        b: Self, db: SIMD[Self.type, Self.width],
+        c: Self, dc: SIMD[Self.type, Self.width],
+    ) -> Self:
+        """Record one node with caller-supplied local partials (a fused/custom op).
+
+        Use for hot expressions whose Jacobian is known in closed form: one tape
+        node instead of one per primitive op.
+        """
+        var idx = Array[Int, MAX_NODE_INPUTS](fill=0)
+        var der = Array[SIMD[Self.type, Self.width], MAX_NODE_INPUTS](fill=0)
+        idx[0] = a.idx
+        idx[1] = b.idx
+        idx[2] = c.idx
+        der[0] = da
+        der[1] = db
+        der[2] = dc
+        a.tape.push_fused(idx, der, 3)
+        return Self(value, a.tape, push=False)
+
+    @staticmethod
+    @always_inline("nodebug")
+    def unary(value: SIMD[Self.type, Self.width], a: Self, da: SIMD[Self.type, Self.width]) -> Self:
+        """Record one node with a single input and caller-supplied partial."""
+        var n = Node[Self.width, Self.type](1, a.idx, 0, da, 0.0)
+        a.tape.push_back(n)
+        return Self(value, a.tape, push=False)
 
     def grad(self) -> SIMD[Self.type, Self.width]:
         return self.tape.adjoint(self.idx)
