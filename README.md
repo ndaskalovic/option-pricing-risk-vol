@@ -59,7 +59,7 @@ var ladder = fd_batch[BsAmericanPut, 4, DType.float64](per_lane_params, x_lo, x_
 
 **Supported operations:**
 - `+ - * /` (with other values or `Float64`), negation, `**k`, `exp`, `log`, `sqrt`, `relu`;
-- `select_gt` / `maximum` / `minimum`;
+- `select_gt` / `maximum` / `minimum` / `absolute`, and `smooth_relu`;
 - `detach` (stop-gradient) and `constant`.
 
 **Rules:**
@@ -111,6 +111,40 @@ All numbers: Apple M5, single core, best of 11–31 runs, price plus every first
 
 For Greeks on fine FD grids, use f64. At 801×800, f32 rounding (up to 6e-4) exceeds the discretisation error.
 
+## Second-order Greeks
+
+The engines are generic over the value type (`autodiff/ct/real.mojo`): `Vec` (plain SIMD) for first order, or `Dual` (value plus one tangent). Running an engine on `Dual` inputs with tangent v gives the price, the gradient and the Hessian-vector product H·v in one forward-over-reverse pass.
+
+```mojo
+var s = mc_hvp[GbmCallSmooth, 16, DType.float32](params, v, n_steps, n_paths, normals)   # s.grad, s.hv
+var h = fd_hessian[BsAmericanPutSmooth[0.002], 1, DType.float64](params, x_lo, x_hi, 401, 400)
+print(h.get(0, 0), h.get(0, 2))                                                           # gamma, vanna
+```
+
+- `mc_hvp`, `fd_hvp`: one pass. `mc_hessian`, `fd_hessian`: one pass per parameter.
+- `mc_hessian_bumped`, `fd_hessian_bumped`: central differences of the exact AAD gradient (not AD), for entries AD cannot see through a kink.
+- `smooth_relu(x, eps)` is a softplus payoff. An FD model with `EXERCISE_EPS > 0` smooths the early-exercise max the same way.
+
+**What is verified** (f64; FD 401×400, MC 200k × 52; `tests/test_second_order.mojo`):
+- Every AD Hessian equals central differences of the AAD gradient (≤ 5e-7 European and MC, ≤ 5e-5 American) and is symmetric (≤ 4e-12). The Black-Scholes reference uses mpmath at 40 digits.
+- **FD European:** every entry within 2e-3 of Black-Scholes (gamma 1e-5), except ∂²V/∂K². K enters only the kinked payoff, so AD returns 0; `fd_hessian_bumped` is within 5e-3.
+- **FD American, hard max:** only the S₀ row and column (gamma, vanna, …) are valid. Moving σ, r, T or K moves the exercise boundary, and the price of the discrete scheme is only piecewise smooth in them (AD volga −29 vs about −1).
+- **FD American, smoothed (ε = 0.002):** every entry except ∂²V/∂K² within 5e-3 of a 1%-bump reference. Smoothing shifts the price (7.5163 vs 7.5129), so use the hard max for price and first-order Greeks.
+- **MC:** a kinked payoff gives pathwise gamma = 0 (the Dirac term at the strike is missed); use a smoothed payoff or `mc_hessian_bumped`. With ε = 0.5, gamma and vanna are within 4 standard errors of Black-Scholes. Volga is dominated by the O(ε²) smoothing bias (−1.04 at ε = 0.5 vs −1.48), so it is not claimed.
+
+**Cost** (`benchmarks/bench_second_order.mojo`; 5 parameters; ratios vs the gradient at the same settings):
+
+| Workload | Gradient | H·v | AD Hessian | Bumped Hessian |
+|---|---|---|---|---|
+| MC smoothed call, f32, W=16 | 1.74 ms | 2.53 ms (1.45×) | 12.8 ms (7.4×) | 19.2 ms (11×) |
+| MC smoothed call, f32, W=32 | 1.16 ms | 3.33 ms (2.9×) | 16.6 ms (14×) | 12.8 ms (11×) |
+| FD American put, hard max, 401×400, f64 | 0.71 ms | 1.29 ms (1.8×) | 6.5 ms (9.1×) | 7.9 ms (11×) |
+| FD American put, ε = 0.002, 401×400, f64 | 2.71 ms | 3.92 ms (1.45×) | 19.7 ms (7.3×) | 30.0 ms (11×) |
+
+- A `Dual` doubles the registers per value, so at W=32 f32 the MC step spills. W=16 is the best width for H·v; at each method's best width, AD and bumped Hessians cost the same (12.8 ms) in MC.
+- The AD Hessian has no bump size to choose and no bump bias. It is about 1.2–1.5× cheaper than bumping, not more, because each H·v pass costs 1.45–1.8× a gradient.
+- Softplus exercise costs about 3.8× the hard max at every order (an exp and a log per node per step).
+
 ## SVI
 
 [apple.ipynb](apple.ipynb) fits raw-SVI parameters to AAPL call quotes. [euro_call_svi.mojo](euro_call_svi.mojo) (tape) and `models/svi.mojo` (compiled) price a K = 220 call by Monte Carlo with the SVI volatility, and return the Greeks plus the sensitivities to every SVI parameter in the same backward pass.
@@ -145,17 +179,19 @@ uv sync --group notebooks                  # numpy, scipy, pandas, matplotlib, y
 .venv/bin/mojo run -I . tests/test_mc_engine.mojo     # MC engine vs tape oracle and Black-Scholes
 .venv/bin/mojo run -I . tests/test_fd_engine.mojo     # FD engine vs tape oracle, Black-Scholes, CRR; batch == single
 .venv/bin/mojo run -I . tests/test_greeks.mojo        # runtime-tape pricer vs Black-Scholes
+.venv/bin/mojo run -I . tests/test_second_order.mojo  # Hessians vs FD of the gradient and Black-Scholes
 
 .venv/bin/mojo run -I . benchmarks/bench_engine.mojo     # MC: compiled vs tape vs pricing only
 .venv/bin/mojo run -I . benchmarks/bench_fd_engine.mojo  # FD: grids and SIMD widths
+.venv/bin/mojo run -I . benchmarks/bench_second_order.mojo  # H.v and Hessians vs first order
 ```
 
 ## Layout
 
 ```
 autodiff/          runtime tape: Number, Tape, Node
-autodiff/ct/       compile-time AAD: ADNum, Kernel, Compiled, Scan, MC engine (mc.mojo), FD engine (fd.mojo), TapeNum
-models/            GBM call and Asian (MC), SVI call (MC), Black-Scholes European/American (FD)
+autodiff/ct/       compile-time AAD: ADNum, Real (Vec, Dual), Kernel, Compiled, Scan, MC engine (mc.mojo), FD engine (fd.mojo), TapeNum
+models/            GBM call, smoothed call and Asian (MC), SVI call (MC), Black-Scholes European/American, smoothed American (FD)
 tests/             correctness suites
 benchmarks/        timing, PC sampler, hardware counters (pmu/)
 vanilla_euro_call.mojo, euro_call_svi.mojo   runtime-tape pricers
