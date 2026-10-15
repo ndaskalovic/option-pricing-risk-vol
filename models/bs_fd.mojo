@@ -6,6 +6,7 @@ struct BsEuroCall(FdModel):
     """params: s0, r, sigma, T, K."""
     comptime NP = 5
     comptime AMERICAN = False
+    comptime EXERCISE_EPS = 0.0
 
     @staticmethod
     def coeffs[N: ADNum](x: N, p: Array[N, Self.NP]) -> Array[N, 3]:
@@ -32,6 +33,7 @@ struct BsEuroCall(FdModel):
 struct BsAmericanPut(FdModel):
     comptime NP = 5
     comptime AMERICAN = True
+    comptime EXERCISE_EPS = 0.0
 
     @staticmethod
     def coeffs[N: ADNum](x: N, p: Array[N, Self.NP]) -> Array[N, 3]:
@@ -40,6 +42,30 @@ struct BsAmericanPut(FdModel):
     @staticmethod
     def payoff[N: ADNum](x: N, p: Array[N, Self.NP]) -> N:
         return (p[4] - x.exp()).relu()
+
+    @staticmethod
+    def spot[N: ADNum](p: Array[N, Self.NP]) -> N:
+        return p[0].log()
+
+    @staticmethod
+    def maturity[N: ADNum](p: Array[N, Self.NP]) -> N:
+        return p[3]
+
+
+struct BsAmericanPutSmooth[eps: Float64 = 0.01](FdModel):
+    """American put with a softplus-smoothed exercise decision of width `eps`, so that
+    second-order Greeks w.r.t. boundary-moving parameters are well defined."""
+    comptime NP = 5
+    comptime AMERICAN = True
+    comptime EXERCISE_EPS = Self.eps
+
+    @staticmethod
+    def coeffs[N: ADNum](x: N, p: Array[N, Self.NP]) -> Array[N, 3]:
+        return BsEuroCall.coeffs[N](x, p)
+
+    @staticmethod
+    def payoff[N: ADNum](x: N, p: Array[N, Self.NP]) -> N:
+        return BsAmericanPut.payoff[N](x, p)
 
     @staticmethod
     def spot[N: ADNum](p: Array[N, Self.NP]) -> N:

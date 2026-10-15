@@ -5,10 +5,14 @@ adjoints, which forward values the reverse sweep reads) and exposes straight-lin
 `eval`, `fwd` (saves only the needed residuals), `bwd`, and fused `vjp`. All loops
 here are `comptime for` over the graph, so the emitted code has no tape, no
 indices and no branches on node type.
+
+The emitted code is generic over the runtime value type `R: Real`:
+`Vec[DT, W]` gives first-order AAD; `Dual[DT, W]` runs the same forward and reverse
+code in tangent mode, i.e. forward-over-reverse (Hessian-vector products).
 """
-from std.math import exp, log, sqrt
 from .ops import *
 from .trace import Kernel, trace
+from .real import Real
 
 
 def _is_leaf(op: Int) -> Bool:
@@ -105,12 +109,7 @@ struct Compiled[K: Kernel]:
 
     @staticmethod
     @always_inline
-    def _forward[W: Int, DT: DType](
-        x: Array[SIMD[DT, W], Self.K.NI], d: Array[SIMD[DT, W], Self.K.ND],
-        mut val: Array[SIMD[DT, W], Self.N],
-    ):
-        comptime assert DT.is_floating_point(), "kernels need a floating-point dtype"
-        comptime V = SIMD[DT, W]
+    def _forward[R: Real](x: Array[R, Self.K.NI], d: Array[R, Self.K.ND], mut val: Array[R, Self.N]):
         comptime for i in range(Self.N):
             comptime n = Self.G[i]
             comptime if n.op == INPUT:
@@ -118,7 +117,7 @@ struct Compiled[K: Kernel]:
             elif n.op == DATA:
                 val[i] = d[n.a]
             elif n.op == CONST:
-                val[i] = V(n.k)
+                val[i] = R.splat(n.k)
             elif n.op == ADD:
                 val[i] = val[n.a] + val[n.b]
             elif n.op == SUB:
@@ -130,24 +129,24 @@ struct Compiled[K: Kernel]:
             elif n.op == NEG:
                 val[i] = -val[n.a]
             elif n.op == EXP:
-                val[i] = exp(val[n.a])
+                val[i] = val[n.a].exp()
             elif n.op == LOG:
-                val[i] = log(val[n.a])
+                val[i] = val[n.a].log()
             elif n.op == SQRT:
-                val[i] = sqrt(val[n.a])
+                val[i] = val[n.a].sqrt()
             elif n.op == POWK:
-                val[i] = val[n.a] ** V(n.k)
+                val[i] = val[n.a].powk(n.k)
             elif n.op == RELU:
-                val[i] = max(val[n.a], V(0))
+                val[i] = val[n.a].relu()
             elif n.op == SELGT:
-                val[i] = val[n.a].gt(val[n.b]).select(val[n.c], val[n.d])
+                val[i] = R.select_gt(val[n.a], val[n.b], val[n.c], val[n.d])
             elif n.op == STOP:
-                val[i] = val[n.a]
+                val[i] = R.lift(val[n.a].value())
 
     @staticmethod
     @always_inline
-    def _outputs[W: Int, DT: DType](val: Array[SIMD[DT, W], Self.N]) -> Array[SIMD[DT, W], Self.K.NO]:
-        var y = Array[SIMD[DT, W], Self.K.NO](fill=0)
+    def _outputs[R: Real](val: Array[R, Self.N]) -> Array[R, Self.K.NO]:
+        var y = Array[R, Self.K.NO](fill=R.splat(0))
         comptime for i in range(Self.N):
             comptime n = Self.G[i]
             comptime if n.op == OUT:
@@ -156,15 +155,11 @@ struct Compiled[K: Kernel]:
 
     @staticmethod
     @always_inline
-    def _reverse[W: Int, DT: DType](
-        val: Array[SIMD[DT, W], Self.N], a_y: Array[SIMD[DT, W], Self.K.NO],
-        mut a_x: Array[SIMD[DT, W], Self.K.NI],
-    ):
+    def _reverse[R: Real](val: Array[R, Self.N], a_y: Array[R, Self.K.NO], mut a_x: Array[R, Self.K.NI]):
         """Accumulate a_x += J^T a_y. Adjoints start at -0.0 (the IEEE additive identity),
         so the first `+=` into each adjoint folds to a plain assignment."""
-        comptime assert DT.is_floating_point(), "kernels need a floating-point dtype"
-        comptime V = SIMD[DT, W]
-        var adj = Array[V, Self.N](fill=V(-0.0))
+        var adj = Array[R, Self.N](fill=R.splat(-0.0))
+        var zero = R.splat(0)
         comptime for i in range(Self.N):
             comptime n = Self.G[i]
             comptime if n.op == OUT:
@@ -176,56 +171,64 @@ struct Compiled[K: Kernel]:
             comptime if not Self.NEED[i] or n.op == OUT:
                 pass
             elif n.op == INPUT:
-                a_x[n.a] += adj[i]
+                var ai = adj[i]   # local copy: element-to-element updates must not alias
+                a_x[n.a] += ai
             elif n.op == ADD:
-                comptime if Self.NEED[n.a]: adj[n.a] += adj[i]
-                comptime if Self.NEED[n.b]: adj[n.b] += adj[i]
+                var ai = adj[i]
+                comptime if Self.NEED[n.a]: adj[n.a] += ai
+                comptime if Self.NEED[n.b]: adj[n.b] += ai
             elif n.op == SUB:
-                comptime if Self.NEED[n.a]: adj[n.a] += adj[i]
-                comptime if Self.NEED[n.b]: adj[n.b] -= adj[i]
+                var ai = adj[i]
+                comptime if Self.NEED[n.a]: adj[n.a] += ai
+                comptime if Self.NEED[n.b]: adj[n.b] -= ai
             elif n.op == MUL:
-                comptime if Self.NEED[n.a]: adj[n.a] += adj[i] * val[n.b]
-                comptime if Self.NEED[n.b]: adj[n.b] += adj[i] * val[n.a]
+                var ai = adj[i]
+                comptime if Self.NEED[n.a]: adj[n.a] += ai * val[n.b]
+                comptime if Self.NEED[n.b]: adj[n.b] += ai * val[n.a]
             elif n.op == DIV:
-                comptime if Self.NEED[n.a]: adj[n.a] += adj[i] / val[n.b]
-                comptime if Self.NEED[n.b]: adj[n.b] -= adj[i] * val[i] / val[n.b]
+                var ai = adj[i]
+                comptime if Self.NEED[n.a]: adj[n.a] += ai / val[n.b]
+                comptime if Self.NEED[n.b]: adj[n.b] -= ai * val[i] / val[n.b]
             elif n.op == NEG:
-                adj[n.a] -= adj[i]
+                var ai = adj[i]
+                adj[n.a] -= ai
             elif n.op == EXP:
-                adj[n.a] += adj[i] * val[i]
+                var ai = adj[i]
+                adj[n.a] += ai * val[i]
             elif n.op == LOG:
-                adj[n.a] += adj[i] / val[n.a]
+                var ai = adj[i]
+                adj[n.a] += ai / val[n.a]
             elif n.op == SQRT:
-                adj[n.a] += adj[i] * V(0.5) / val[i]
+                var ai = adj[i]
+                adj[n.a] += ai * 0.5 / val[i]
             elif n.op == POWK:
-                adj[n.a] += adj[i] * V(n.k) * val[n.a] ** V(n.k - 1)
+                var ai = adj[i]
+                adj[n.a] += ai * n.k * val[n.a].powk(n.k - 1)
             elif n.op == RELU:
-                adj[n.a] += val[n.a].gt(V(0)).select(adj[i], V(0))
+                var ai = adj[i]
+                adj[n.a] += R.select_gt(val[n.a], zero, ai, zero)
             elif n.op == SELGT:
-                var m = val[n.a].gt(val[n.b])
-                comptime if Self.NEED[n.c]: adj[n.c] += m.select(adj[i], V(0))
-                comptime if Self.NEED[n.d]: adj[n.d] += m.select(V(0), adj[i])
+                var ai = adj[i]
+                comptime if Self.NEED[n.c]: adj[n.c] += R.select_gt(val[n.a], val[n.b], ai, zero)
+                comptime if Self.NEED[n.d]: adj[n.d] += R.select_gt(val[n.a], val[n.b], zero, ai)
 
-    # ── public API ───────────────────────────────────────────────────────
+    # ── public API (generic over the value type R) ───────────────────────
 
     @staticmethod
     @always_inline
-    def eval[W: Int, DT: DType](
-        x: Array[SIMD[DT, W], Self.K.NI], d: Array[SIMD[DT, W], Self.K.ND]
-    ) -> Array[SIMD[DT, W], Self.K.NO]:
+    def eval[R: Real](x: Array[R, Self.K.NI], d: Array[R, Self.K.ND]) -> Array[R, Self.K.NO]:
         """Primal only."""
-        var val = Array[SIMD[DT, W], Self.N](fill=0)
+        var val = Array[R, Self.N](fill=R.splat(0))
         Self._forward(x, d, val)
         return Self._outputs(val)
 
     @staticmethod
     @always_inline
-    def fwd[W: Int, DT: DType](
-        x: Array[SIMD[DT, W], Self.K.NI], d: Array[SIMD[DT, W], Self.K.ND],
-        res: Pointer[SIMD[DT, W], MutUntrackedOrigin],
-    ) -> Array[SIMD[DT, W], Self.K.NO]:
+    def fwd[R: Real](
+        x: Array[R, Self.K.NI], d: Array[R, Self.K.ND], res: Pointer[R, MutUntrackedOrigin]
+    ) -> Array[R, Self.K.NO]:
         """Primal, saving the NRES values `bwd` needs into res[0..NRES)."""
-        var val = Array[SIMD[DT, W], Self.N](fill=0)
+        var val = Array[R, Self.N](fill=R.splat(0))
         Self._forward(x, d, val)
         comptime for r in range(Self.NRES):
             comptime j = Self.RES[r]
@@ -234,13 +237,12 @@ struct Compiled[K: Kernel]:
 
     @staticmethod
     @always_inline
-    def bwd[W: Int, DT: DType](
-        d: Array[SIMD[DT, W], Self.K.ND], res: Pointer[SIMD[DT, W], MutUntrackedOrigin],
-        a_y: Array[SIMD[DT, W], Self.K.NO], mut a_x: Array[SIMD[DT, W], Self.K.NI],
+    def bwd[R: Real](
+        d: Array[R, Self.K.ND], res: Pointer[R, MutUntrackedOrigin],
+        a_y: Array[R, Self.K.NO], mut a_x: Array[R, Self.K.NI],
     ):
         """a_x += J^T a_y, using residuals saved by `fwd` and the same data `d`."""
-        comptime V = SIMD[DT, W]
-        var val = Array[V, Self.N](fill=0)
+        var val = Array[R, Self.N](fill=R.splat(0))
         comptime for r in range(Self.NRES):
             comptime j = Self.RES[r]
             val[j] = res[unsafe_offset=r]
@@ -249,17 +251,18 @@ struct Compiled[K: Kernel]:
             comptime if n.op == DATA:
                 val[i] = d[n.a]
             elif n.op == CONST:
-                val[i] = V(n.k)
+                val[i] = R.splat(n.k)
         Self._reverse(val, a_y, a_x)
 
     @staticmethod
     @always_inline
-    def vjp[W: Int, DT: DType](
-        x: Array[SIMD[DT, W], Self.K.NI], d: Array[SIMD[DT, W], Self.K.ND],
-        a_y: Array[SIMD[DT, W], Self.K.NO], mut a_x: Array[SIMD[DT, W], Self.K.NI],
-    ) -> Array[SIMD[DT, W], Self.K.NO]:
-        """Fused primal + reverse (no residual buffer). Returns y; a_x += J^T a_y."""
-        var val = Array[SIMD[DT, W], Self.N](fill=0)
+    def vjp[R: Real](
+        x: Array[R, Self.K.NI], d: Array[R, Self.K.ND],
+        a_y: Array[R, Self.K.NO], mut a_x: Array[R, Self.K.NI],
+    ) -> Array[R, Self.K.NO]:
+        """Fused primal + reverse (no residual buffer). Returns y; a_x += J^T a_y.
+        With R = Dual, the tangent of a_x is the directional derivative of J^T a_y."""
+        var val = Array[R, Self.N](fill=R.splat(0))
         Self._forward(x, d, val)
         Self._reverse(val, a_y, a_x)
         return Self._outputs(val)

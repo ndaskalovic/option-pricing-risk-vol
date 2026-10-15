@@ -47,3 +47,16 @@ def maximum[N: ADNum](a: N, b: N) -> N:
 @always_inline
 def minimum[N: ADNum](a: N, b: N) -> N:
     return N.select_gt(a, b, b, a)
+
+
+@always_inline
+def absolute[N: ADNum](x: N) -> N:
+    return N.select_gt(x, x.constant(0.0), x, -x)
+
+
+@always_inline
+def smooth_relu[N: ADNum](x: N, eps: Float64) -> N:
+    """Softplus max(x, 0) of width eps: eps * log(1 + exp(x / eps)), in overflow-safe form.
+    Smooth payoffs make pathwise MC second derivatives (gamma, vanna, volga) consistent;
+    the price bias is O(eps^2) times the density at the kink."""
+    return x.relu() + eps * (1.0 + (-absolute(x) / eps).exp()).log()
