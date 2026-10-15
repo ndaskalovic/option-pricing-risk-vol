@@ -1,73 +1,182 @@
 # Option Pricing, Risk and Volatility Modelling
 
-This repository contains some of the code I developed as part of my master's thesis which studied the use of Adjoint Automatic differentiation (AAD) for calculating the Greeks on options priced using Monte Carlo under the Black Scholes model. It explores the benefits of vectorised computations for this task and shows the speedup that can be gained.
+Adjoint algorithmic differentiation (AAD) for option Greeks, written in [Mojo](https://www.modular.com/mojo). It started as part of my master's thesis on AAD for Monte Carlo Greeks under Black-Scholes [2, 3]. It has since grown into a small library with two ways to differentiate a pricer:
 
-[My implementation of AAD](autodiff) uses a Tape structure to hold Nodes representing mathematical operations carried out in the program. This is a simple way of representing a computation graph DAG and is all abstracted behind the Number interface. Calculating adjoints is as easy as performing the backpropagation algorithm to accumulate them using the chain rule.
+- **A runtime tape** (`autodiff/`) records every operation on `Number` values and runs the chain rule backwards. It handles any code, and uses SIMD lanes as Monte Carlo paths and pathwise adjoints with mark/rewind [2].
+- **Compile-time AAD** (`autodiff/ct/`) is the main engine. You write small, branch-free model functions once, generic over a number type. The Mojo compiler traces each one into a graph *at compile time*, analyses it, and emits straight-line forward and reverse code: no tape, no runtime interpretation. Monte Carlo and finite-difference engines run these kernels.
 
-I thought the [Mojo]() programming language might be well suited to this task as it provides easy access to SIMD primitives which compile to CPU-native instructions.
+Like Polars, the trade-off is a fixed set of supported operations in exchange for optimised execution.
 
-As an extension to these initial results, I implemented a simply SVI volatility model and calculated the sensitivities of its parameters using AAD.
+## Writing a model
 
-## Speeding up Monte Carlo Option Pricing
+A Monte Carlo model is four small functions (`models/gbm.mojo`):
 
-I priced a vanilla European call using the Black Scholes model and 200,000 Monte Carlo paths across weekly time steps for the sake of complexity. The test was ran on a Ryzen 9 5900x which supports AVX2, so theoretically has space for eight 32-bit floats in its registers. The actual speed up achieved is **6.7x**.
+```mojo
+struct GbmCall(McModel):
+    """params: s0, r, sigma, T, K.   coeffs: drift, vol*sqrt(dt).   state: log S."""
+    comptime NP = 5; comptime NC = 2; comptime NS = 1; comptime NZ = 1
 
+    @staticmethod
+    def setup[N: ADNum](p: Array[N, 5], n_steps: N) -> Array[N, 2]:      # once per run
+        var dt = p[3] / n_steps
+        var c = Array[N, 2](fill=dt)
+        c[0] = (p[1] - 0.5 * p[2] * p[2]) * dt
+        c[1] = p[2] * dt.sqrt()
+        return c^
 
-![](simd_speedup_raw.png)
+    @staticmethod
+    def init[N: ADNum](p: Array[N, 5]) -> Array[N, 1]:                    # initial state
+        return Array[N, 1](fill=p[0].log())
 
-## Fast Risk
+    @staticmethod
+    def step[N: ADNum](s: Array[N, 1], c: Array[N, 2], z: Array[N, 1]) -> Array[N, 1]:   # each time step
+        return Array[N, 1](fill=s[0] + c[0] + c[1] * z[0])
 
-Optimisations such as pathwise adjoints [2] are implemented to reduced memory consumption and improve performance. Similar overall performance improvemetns can be seen when pricing the European option and calculating the first-order Greeks (Delta, Rho, Theta, Vega). A maximum **8.1x** speed up is achieved here. This is the theoretical maximum that can be achieved on this processor and is due to the fact that the computational overhead of AAD slows the program down enough to escape potential I/O bottlenecks.
+    @staticmethod
+    def payoff[N: ADNum](s: Array[N, 1], p: Array[N, 5], c: Array[N, 2]) -> N:          # each path
+        return (s[0].exp() - p[4]).relu() * (-p[1] * p[3]).exp()
 
-![](simd_speedup_aad.png)
+var r = mc_compiled[GbmCall, 32, DType.float32](params, n_steps, n_paths, normals)
+print(r.price, r.grad[0], r.grad[2])      # price, delta, vega; grad has one entry per parameter
+```
 
-This simulation with adjoint calculations exhibits a 3-4x slow down which matches the upper bound given in [4].
+A finite-difference model supplies the PDE coefficients, the payoff, the spot and the maturity (`models/bs_fd.mojo`). The engine owns the grid, the Crank–Nicolson stepping, the tridiagonal solves, early exercise and the reverse sweep:
 
-## Some Volatility Modelling and Sensitivities
+```mojo
+struct BsAmericanPut(FdModel):
+    comptime NP = 5
+    comptime AMERICAN = True
+    @staticmethod
+    def coeffs[N: ADNum](x: N, p: Array[N, 5]) -> Array[N, 3]: ...   # V_τ = a V_xx + b V_x − c V,  x = log S
+    @staticmethod
+    def payoff[N: ADNum](x: N, p: Array[N, 5]) -> N:
+        return (p[4] - x.exp()).relu()
+    ...
 
-### SVI
+var res = fd_compiled[BsAmericanPut, 1, DType.float64](params, x_lo, x_hi, nx=201, nt=200)
+var ladder = fd_batch[BsAmericanPut, 4, DType.float64](per_lane_params, x_lo, x_hi, 201, 200)  # 4 options, one solve
+```
 
-The first local volatility model is a simple one - SVI. In [apple.ipynb](apple.ipynb) the current Apple stock call options data from yfinance are used to fit the SVI parameters $a$, $b$, $\rho$, $\sigma$ and $m$. There parameters are then used in [euro_call_svi.mojo](euro_call_svi.mojo) to price a European Call option of strike 220 with Monte Carlo using the SVI calculated volatility to find the first-order Greeks as well as the SVI parameter sensitivities. The correctness of the price and Greeks can easily be checked with an [online tool](https://quantpie.co.uk/inp/inp_bsm_price_greeks.php).
+**Supported operations:**
+- `+ - * /` (with other values or `Float64`), negation, `**k`, `exp`, `log`, `sqrt`, `relu`;
+- `select_gt` / `maximum` / `minimum`;
+- `detach` (stop-gradient) and `constant`.
 
-<!-- ```
-Price:  29.50482177734375
-Delta:  0.64890378713607788
-Theta:  19.051700592041016
-Rho:    86.219757080078125
+**Rules:**
+- No `if` on values: use `select_gt`.
+- Loops inside a kernel need counts known at compile time. The engines own the runtime loops over paths, steps and the grid.
 
-SVI params sensitivities:
-a:      169.47048950195312
-b:      1087.1392822265625
-rho:    -0.32143396139144897
-m:      0.24952980875968933
-sigma:  0.0038893709424883127
-``` -->
+The same model source also runs on the runtime tape (`mc_tape`, `fd_tape`). That gives a flexible fallback, and an independent oracle for the tests.
 
+## Performance
 
-|Param|Analytical Value|MC+AAD Value|
-|-----|----------------|----------------|
-|Price|29.5669|29.5048|
-|$\Delta$|0.6487|0.6489|
-|$\theta$|-19.1122|-19.0517|
-|$\rho$|86.1373|86.2198|
+All numbers: Apple M5, single core, best of 11–31 runs, price plus every first-order Greek.
 
+**Monte Carlo**, GBM European call, 200k paths × 52 steps, f32:
 
-|SVI param|Sensitivity|
-|-----|----------------|
-|a|169.44705|
-|b|1087.1393|
-|$\rho$|-0.3214|
-|m|0.2495|
-|$\sigma$|0.0039|
+| | Time |
+|---|---|
+| Pricing only (log space) | 0.55 ms |
+| **Compiled engine, price + 5 Greeks** | **0.93 ms** (1.7× pricing) |
+| Runtime tape, price + 5 Greeks | 3.3 ms |
 
-### Local Volatility
+**Finite differences**, American put, f64:
 
-Dupire local vol WIP
-<!-- To really showcase the beenfits of AAD, a local volatility model is used and all X local vega values are calculated in only Yx the time it takes to evaluate the primal Monte Carlo simulation. -->
+| Grid | Price + 5 Greeks | Pricing only |
+|---|---|---|
+| 201×200, one option | 0.18 ms | 0.068 ms |
+| 201×200, 4 options (`fd_batch`) | 0.23 ms | 0.081 ms |
+| 401×400, one option | 0.69 ms | 0.27 ms |
+| 801×800, one option | 2.76 ms | 1.04 ms |
+
+- The same scheme on the runtime tape is about 35× slower.
+- The tridiagonal solves are limited by the latency of their recurrences. Batching 4 (f64) or 8 (f32) options into SIMD lanes therefore costs about the same as one.
+
+**How the engines get there:**
+- **Compile-time differentiation:** activity and liveness analysis, so the reverse sweep saves only the forward values it reads; first-assign adjoints.
+- **Pathwise MC:** the setup runs once below the "mark", and each step is a fused kernel.
+- **FD:** the implicit operator is LU-factorised once, so the time loops have no divisions. Recurrences are carried in registers, and the reverse sweep is two fused passes per step.
+
+`benchmarks/` reproduces these numbers. For profiling it has a line-level PC sampler (`pcsample.py`) and an Apple-Silicon hardware-counter harness (`pmu/`).
+
+**Rust comparison** (`experiments/rust_bench/`), the same MC kernel on identical inputs:
+
+| Variant | Time | vs Mojo |
+|---|---|---|
+| Rust with build-time code generation, `std::simd`, explicit FMA | 0.98 ms | 1.06× |
+| Rust stable, `[f32; 32]` lanes | 1.36 ms | 1.47× |
+| Enzyme (`std::autodiff`) | 1.8 ms | 1.94× |
+
+## Accuracy
+
+| Check | Result |
+|---|---|
+| Compiled vs tape, same model source, f64 (MC GBM, Asian, SVI; FD European, American) | agree to ~1e-14 |
+| Every operation: compiled reverse mode vs tape, random inputs | ≤ 1e-11 |
+| FD European call 801×800 vs Black-Scholes (price and 5 Greeks) | ≤ 1e-5 relative |
+| FD American put 801×800 vs CRR binomial (4000 steps) | 2e-5 relative |
+| MC GBM call vs Black-Scholes | within 4 standard errors |
+
+For Greeks on fine FD grids, use f64. At 801×800, f32 rounding (up to 6e-4) exceeds the discretisation error.
+
+## SVI
+
+[apple.ipynb](apple.ipynb) fits raw-SVI parameters to AAPL call quotes. [euro_call_svi.mojo](euro_call_svi.mojo) (tape) and `models/svi.mojo` (compiled) price a K = 220 call by Monte Carlo with the SVI volatility, and return the Greeks plus the sensitivities to every SVI parameter in the same backward pass.
+
+| | Analytical | MC + AAD |
+|---|---|---|
+| Price | 29.5669 | 29.5396 |
+| Δ | 0.6487 | 0.6493 |
+| θ = −∂V/∂T | −19.1122 | −19.0754 |
+| ρ | 86.1373 | 86.2563 |
+
+| SVI parameter | Sensitivity |
+|---|---|
+| a | 169.727 |
+| b | 1088.79 |
+| ρ | −0.3219 |
+| m | 0.2499 |
+| σ | 0.003895 |
+
+- Theta holds the SVI volatility fixed: T is `detach`ed inside the variance-to-vol conversion.
+- The fit is in strike space and unconstrained. The fitted ρ = −1.23 lies outside |ρ| < 1, so treat this as a demonstration rather than a calibrated surface.
+
+## Setup
+
+[Mojo 1.1](https://docs.modular.com/mojo/) via [uv](https://docs.astral.sh/uv/):
+
+```bash
+uv sync                                    # Mojo 1.1.0 + MAX 26.6 into .venv
+uv sync --group notebooks                  # numpy, scipy, pandas, matplotlib, yfinance
+
+.venv/bin/mojo run -I . tests/test_ct_ops.mojo        # each op: compiled reverse mode == tape
+.venv/bin/mojo run -I . tests/test_mc_engine.mojo     # MC engine vs tape oracle and Black-Scholes
+.venv/bin/mojo run -I . tests/test_fd_engine.mojo     # FD engine vs tape oracle, Black-Scholes, CRR; batch == single
+.venv/bin/mojo run -I . tests/test_greeks.mojo        # runtime-tape pricer vs Black-Scholes
+
+.venv/bin/mojo run -I . benchmarks/bench_engine.mojo     # MC: compiled vs tape vs pricing only
+.venv/bin/mojo run -I . benchmarks/bench_fd_engine.mojo  # FD: grids and SIMD widths
+```
+
+## Layout
+
+```
+autodiff/          runtime tape: Number, Tape, Node
+autodiff/ct/       compile-time AAD: ADNum, Kernel, Compiled, Scan, MC engine (mc.mojo), FD engine (fd.mojo), TapeNum
+models/            GBM call and Asian (MC), SVI call (MC), Black-Scholes European/American (FD)
+tests/             correctness suites
+benchmarks/        timing, PC sampler, hardware counters (pmu/)
+experiments/       Rust comparison benchmark
+vanilla_euro_call.mojo, euro_call_svi.mojo   runtime-tape pricers
+```
+
+## Earlier results
+
+The SIMD-speedup figures in earlier versions of this README were measured with a bug: paths reused each other's random numbers, and the last paths read past the end of the buffer. They have been removed. The bug, a tape-replay off-by-one, and a missing tape bounds check are fixed and covered by the tests.
 
 ## References
 
-- [1] Gatheral, J. and Jacquier, A. (2013) ‘Arbitrage-free SVI volatility surfaces’, Quantitative Finance, 14(1), pp. 59–71.
+- [1] Gatheral, J. and Jacquier, A. (2013). 'Arbitrage-free SVI volatility surfaces', Quantitative Finance, 14(1), pp. 59–71.
 - [2] Giles, M.B., & Glasserman, P. (2005). Smoking Adjoints: fast evaluation of Greeks in Monte Carlo calculations.
-- [3] Savine, Antoine. (2019). Modern Computational Finance : AAD and Parallel Simulations. 1st edition. Hoboken, New Jersey: Wiley.
-- [4] Griewank, A., & Walther, A. (2000). Evaluating derivatives - principles and techniques of algorithmic differentiation, Second Edition. Frontiers in applied mathematics.
+- [3] Savine, Antoine. (2019). Modern Computational Finance: AAD and Parallel Simulations. Wiley.
+- [4] Griewank, A., & Walther, A. (2008). Evaluating Derivatives: Principles and Techniques of Algorithmic Differentiation, 2nd edition. SIAM.
