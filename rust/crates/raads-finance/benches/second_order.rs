@@ -6,9 +6,11 @@
 //! Every output is consumed.
 
 use raads::lanes::{F32x16, F32x32, F64x4, F64x8};
-use raads::{Arr, Dual, FdGrid, FdModel, Lanes, McModel, fd_greeks, fd_price, mc_greeks};
-use raads_models::bs_fd::{BsAmericanPut, BsAmericanPutSmooth};
-use raads_models::gbm::GbmCallSmooth;
+use raads::{Arr, Dual, Lanes};
+use raads_engines::paths::{self, PathModel};
+use raads_engines::pde1d::{self, Grid, PdeModel};
+use raads_finance::bs_fd::{BsAmericanPut, BsAmericanPutSmooth};
+use raads_finance::gbm::GbmCallSmooth;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand_distr::{Distribution, StandardNormal};
@@ -36,29 +38,31 @@ fn timed(t: &mut f64, f: impl FnOnce() -> f64) -> f64 {
 fn mc<L: Lanes>(z: &[f32]) {
     type M = GbmCallSmooth;
     let n_paths = 200_000;
-    let vec = |p: [f64; 5]| -> <M as McModel>::P<L> { Arr::from_fn(|i| L::from(p[i])) };
-    let dual = |v: [f64; 5]| -> <M as McModel>::P<Dual<L>> { Arr::from_fn(|i| Dual::new(L::from(P[i]), L::from(v[i]))) };
+    let vec = |p: [f64; 5]| -> <M as PathModel>::P<L> { Arr::from_fn(|i| L::from(p[i])) };
+    let dual = |v: [f64; 5]| -> <M as PathModel>::P<Dual<L>> { Arr::from_fn(|i| Dual::new(L::from(P[i]), L::from(v[i]))) };
     let unit = |j: usize| -> [f64; 5] { std::array::from_fn(|i| if i == j { 1.0 } else { 0.0 }) };
     let mut b = [f64::INFINITY; 4];
     let mut chk = 0.0;
     for _ in 0..REPS {
         chk += timed(&mut b[0], || {
-            let g = mc_greeks::<M, L>(&vec(P), NS, n_paths, z);
-            g.price + g.grad.iter().sum::<f64>()
+            let g = paths::gradient::<M, L>(&vec(P), NS, n_paths, z);
+            g.value + g.grad.iter().sum::<f64>()
         });
         chk += timed(&mut b[1], || {
-            let h = mc_greeks::<M, Dual<L>>(&dual(V), NS, n_paths, z);
-            h.price_tangent + h.grad_tangent.iter().sum::<f64>()
+            let h = paths::gradient::<M, Dual<L>>(&dual(V), NS, n_paths, z);
+            h.value_tangent + h.grad_tangent.iter().sum::<f64>()
         });
         chk += timed(&mut b[2], || {
-            (0..5).map(|j| mc_greeks::<M, Dual<L>>(&dual(unit(j)), NS, n_paths, z).grad_tangent.iter().sum::<f64>()).sum()
+            (0..5).map(|j| paths::gradient::<M, Dual<L>>(&dual(unit(j)), NS, n_paths, z).grad_tangent.iter().sum::<f64>()).sum()
         });
         chk += timed(&mut b[3], || {
-            let base = mc_greeks::<M, L>(&vec(P), NS, n_paths, z).price;
+            let base = paths::gradient::<M, L>(&vec(P), NS, n_paths, z).value;
             base + (0..5)
                 .map(|j| {
-                    let (gp, gm) =
-                        (mc_greeks::<M, L>(&vec(bumped(j, 1.0)), NS, n_paths, z), mc_greeks::<M, L>(&vec(bumped(j, -1.0)), NS, n_paths, z));
+                    let (gp, gm) = (
+                        paths::gradient::<M, L>(&vec(bumped(j, 1.0)), NS, n_paths, z),
+                        paths::gradient::<M, L>(&vec(bumped(j, -1.0)), NS, n_paths, z),
+                    );
                     (0..5).map(|i| gp.grad[i] - gm.grad[i]).sum::<f64>()
                 })
                 .sum::<f64>()
@@ -78,8 +82,8 @@ fn mc<L: Lanes>(z: &[f32]) {
     );
 }
 
-fn fd<M: FdModel, L: Lanes>(nx: usize, nt: usize) {
-    let g = FdGrid::new(100f64.ln() - 1.2, 100f64.ln() + 1.2, nx, nt);
+fn fd<M: PdeModel, L: Lanes>(nx: usize, nt: usize) {
+    let g = Grid::new(100f64.ln() - 1.2, 100f64.ln() + 1.2, nx, nt);
     let vp = |q: [f64; 5]| -> M::P<L> { Arr::from_fn(|i| L::from(q[i])) };
     let dp = |t: [f64; 5]| -> M::P<Dual<L>> { Arr::from_fn(|i| Dual::new(L::from(P[i]), L::from(t[i]))) };
     let v: [f64; 5] = std::array::from_fn(|j| 0.3 + 0.1 * j as f64);
@@ -87,28 +91,28 @@ fn fd<M: FdModel, L: Lanes>(nx: usize, nt: usize) {
     let mut b = [f64::INFINITY; 5];
     let mut chk = 0.0;
     for _ in 0..REPS {
-        chk += timed(&mut b[0], || s(fd_price::<M, L>(&vp(P), &g)));
+        chk += timed(&mut b[0], || s(pde1d::value::<M, L>(&vp(P), &g)));
         chk += timed(&mut b[1], || {
-            let r = fd_greeks::<M, L>(&vp(P), &g);
-            s(r.price) + r.grad.as_ref().iter().map(|&x| s(x)).sum::<f64>()
+            let r = pde1d::gradient::<M, L>(&vp(P), &g);
+            s(r.value) + r.grad.as_ref().iter().map(|&x| s(x)).sum::<f64>()
         });
         chk += timed(&mut b[2], || {
-            let r = fd_greeks::<M, Dual<L>>(&dp(v), &g);
-            s(r.price.t) + r.grad.as_ref().iter().map(|x| s(x.t)).sum::<f64>()
+            let r = pde1d::gradient::<M, Dual<L>>(&dp(v), &g);
+            s(r.value.t) + r.grad.as_ref().iter().map(|x| s(x.t)).sum::<f64>()
         });
         chk += timed(&mut b[3], || {
             (0..5)
                 .map(|j| {
                     let e: [f64; 5] = std::array::from_fn(|i| if i == j { 1.0 } else { 0.0 });
-                    fd_greeks::<M, Dual<L>>(&dp(e), &g).grad.as_ref().iter().map(|x| s(x.t)).sum::<f64>()
+                    pde1d::gradient::<M, Dual<L>>(&dp(e), &g).grad.as_ref().iter().map(|x| s(x.t)).sum::<f64>()
                 })
                 .sum()
         });
         chk += timed(&mut b[4], || {
-            let base = s(fd_greeks::<M, L>(&vp(P), &g).price);
+            let base = s(pde1d::gradient::<M, L>(&vp(P), &g).value);
             base + (0..5)
                 .map(|j| {
-                    let (gp, gm) = (fd_greeks::<M, L>(&vp(bumped(j, 1.0)), &g), fd_greeks::<M, L>(&vp(bumped(j, -1.0)), &g));
+                    let (gp, gm) = (pde1d::gradient::<M, L>(&vp(bumped(j, 1.0)), &g), pde1d::gradient::<M, L>(&vp(bumped(j, -1.0)), &g));
                     (0..5).map(|i| s(gp.grad.as_ref()[i] - gm.grad.as_ref()[i])).sum::<f64>()
                 })
                 .sum::<f64>()
@@ -116,7 +120,7 @@ fn fd<M: FdModel, L: Lanes>(nx: usize, nt: usize) {
     }
     println!(
         "FD American put eps {} {nx}x{nt} W={} | price {:.3} ms | grad {:.3} ({:.2}x price) | H.v {:.3} ({:.2}x grad) | AD Hessian {:.3} ({:.1}x grad) | bumped {:.3} ({:.1}x grad) | chk {chk:.3}",
-        M::EXERCISE_EPS,
+        M::OBSTACLE_EPS,
         L::W,
         b[0],
         b[1],

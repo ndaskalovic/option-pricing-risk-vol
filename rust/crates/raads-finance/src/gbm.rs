@@ -1,11 +1,12 @@
-//! GBM European and Asian calls (log-space exact scheme).
+//! GBM European and Asian calls (log-space exact scheme) for the path engine. The engine's
+//! `functional` is the discounted payoff, so its value is the price and its gradient the Greeks.
 
-use raads::{AdNum, mc_model};
+use raads::{AdNum, kernels};
 
 /// European call. params: s0, r, sigma, T, K. coeffs: drift, vol·√dt. state: log S.
 pub struct GbmCall;
 
-#[mc_model]
+#[kernels(raads_engines::paths)]
 impl GbmCall {
     pub fn setup<N: AdNum>(p: [N; 5], #[data] n_steps: N) -> [N; 2] {
         let r = p[1];
@@ -22,7 +23,8 @@ impl GbmCall {
         [s[0] + c[0] + c[1] * z[0]]
     }
 
-    pub fn payoff<N: AdNum>(s: [N; 1], p: [N; 5], _c: [N; 2]) -> N {
+    /// Discounted payoff.
+    pub fn functional<N: AdNum>(s: [N; 1], p: [N; 5], _c: [N; 2]) -> N {
         (s[0].exp() - p[4]).relu() * (-p[1] * p[3]).exp()
     }
 }
@@ -30,7 +32,7 @@ impl GbmCall {
 /// Arithmetic-average Asian call. state: log S, running sum of S. coeffs: drift, vol·√dt, 1/n.
 pub struct GbmAsianCall;
 
-#[mc_model]
+#[kernels(raads_engines::paths)]
 impl GbmAsianCall {
     pub fn setup<N: AdNum>(p: [N; 5], #[data] n_steps: N) -> [N; 3] {
         let r = p[1];
@@ -48,7 +50,8 @@ impl GbmAsianCall {
         [x, s[1] + x.exp()]
     }
 
-    pub fn payoff<N: AdNum>(s: [N; 2], p: [N; 5], c: [N; 3]) -> N {
+    /// Discounted payoff.
+    pub fn functional<N: AdNum>(s: [N; 2], p: [N; 5], c: [N; 3]) -> N {
         (s[1] * c[2] - p[4]).relu() * (-p[1] * p[3]).exp()
     }
 }
@@ -56,7 +59,7 @@ impl GbmAsianCall {
 /// European call with a softplus-smoothed payoff of width `EPS`, for pathwise second-order Greeks.
 pub struct GbmCallSmooth;
 
-#[mc_model]
+#[kernels(raads_engines::paths)]
 impl GbmCallSmooth {
     pub const EPS: f64 = 0.5;
 
@@ -75,7 +78,8 @@ impl GbmCallSmooth {
         [s[0] + c[0] + c[1] * z[0]]
     }
 
-    pub fn payoff<N: AdNum>(s: [N; 1], p: [N; 5], _c: [N; 2]) -> N {
+    /// Discounted smoothed payoff.
+    pub fn functional<N: AdNum>(s: [N; 1], p: [N; 5], _c: [N; 2]) -> N {
         (s[0].exp() - p[4]).smooth_relu(Self::EPS) * (-p[1] * p[3]).exp()
     }
 }

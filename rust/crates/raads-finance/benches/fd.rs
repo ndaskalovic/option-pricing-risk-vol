@@ -3,8 +3,9 @@
 //! Every output is consumed.
 
 use raads::lanes::{F32x8, F64x4};
-use raads::{FdGrid, Lanes, Real, fd_greeks, fd_price};
-use raads_models::bs_fd::BsAmericanPut;
+use raads::{Lanes, Real};
+use raads_engines::pde1d::{self, Grid};
+use raads_finance::bs_fd::BsAmericanPut;
 use std::hint::black_box;
 use std::time::Instant;
 
@@ -24,12 +25,12 @@ fn run<R: Real>(label: &str, nx: usize, nt: usize) {
     let strikes = [90.0, 100.0, 110.0, 120.0, 95.0, 105.0, 115.0, 125.0];
     let mut p = [100.0, 0.01, 0.2, 1.0, 100.0].map(R::from);
     p[4] = R::lift(R::Lanes::from_fn(|l| strikes[l % 8]));
-    let g = FdGrid::new(100f64.ln() - 1.2, 100f64.ln() + 1.2, nx, nt);
+    let g = Grid::new(100f64.ln() - 1.2, 100f64.ln() + 1.2, nx, nt);
     let sum = |v: R| v.value().sum();
-    let tp = best_ms(31, || sum(fd_price::<BsAmericanPut, R>(black_box(&p), &g)));
+    let tp = best_ms(31, || sum(pde1d::value::<BsAmericanPut, R>(black_box(&p), &g)));
     let tg = best_ms(31, || {
-        let r = fd_greeks::<BsAmericanPut, R>(black_box(&p), &g);
-        sum(r.price) + r.grad.iter().map(|&x| sum(x)).sum::<f64>()
+        let r = pde1d::gradient::<BsAmericanPut, R>(black_box(&p), &g);
+        sum(r.value) + r.grad.iter().map(|&x| sum(x)).sum::<f64>()
     });
     println!("{label} W={} {nx}x{nt}: price {tp:.3} ms | price + 5 Greeks {tg:.3} ms ({:.2}x)", R::Lanes::W, tg / tp);
 }

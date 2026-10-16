@@ -8,8 +8,10 @@
 //! Every output is consumed. Pass `quick` to run h = 0.02 and 0.01 only.
 
 use raads::lanes::{F64x4, F64x8};
-use raads::{AdNum, Dual, FdSurface, Lanes, Real, SurfaceGrid, SurfaceOption, SurfacePoint, fd_surface, fd_surface_book};
-use raads_models::bs_fd::BsPutMoneyness;
+use raads::{AdNum, Dual, Lanes, Real};
+use raads_engines::pde1d::{self, Read, SnapshotGrid, Snapshots};
+use raads_finance::bs_fd::BsPutMoneyness;
+use raads_finance::{SurfaceOption, option};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, StandardNormal};
@@ -70,7 +72,7 @@ impl Market {
     }
 
     /// x = log(S/K) range covering every strike of the batch ± 4.5 sd at the longest maturity.
-    fn grid(&self, und: &[usize], h: f64, dt: f64) -> SurfaceGrid {
+    fn grid(&self, und: &[usize], h: f64, dt: f64) -> SnapshotGrid {
         let (mut lo, mut hi, mut smax) = (0.0f64, 0.0f64, 0.0f64);
         for &u in und {
             lo = lo.min((self.s[u] / self.k[u * NK + NK - 1]).ln());
@@ -78,7 +80,7 @@ impl Market {
             smax = smax.max(self.sig[u]);
         }
         let z = 4.5 * smax * self.t[NM - 1].sqrt();
-        SurfaceGrid::new(lo - z, hi + z, ((hi - lo + 2.0 * z) / h).ceil() as usize + 1, dt)
+        SnapshotGrid::new(lo - z, hi + z, ((hi - lo + 2.0 * z) / h).ceil() as usize + 1, dt)
     }
 
     fn lanes<L: Lanes>(&self, und: &[usize], f: &[f64]) -> L {
@@ -99,11 +101,11 @@ fn run_values<L: Lanes>(mk: &Market, h: f64, dt: f64) -> f64 {
     let mut chk = 0.0;
     for und in mk.order.chunks_exact(w) {
         let p = [L::from(RATE), mk.lanes(und, &mk.q), mk.lanes(und, &mk.sig)];
-        let s: FdSurface<L> = fd_surface::<M, L>(&p, &mk.grid(und, h, dt), &mk.t);
+        let s: Snapshots<L> = pde1d::snapshots::<M, L>(&p, &mk.grid(und, h, dt), &mk.t);
         let spot: L = mk.lanes(und, &mk.s);
         for m in 0..NM {
             for j in 0..NK {
-                chk += sum5(&s.option(m, spot, mk.strikes(und, j)));
+                chk += sum5(&option(&s, m, spot, mk.strikes(und, j)));
             }
         }
     }
@@ -122,11 +124,11 @@ fn run_dual<L: Lanes>(mk: &Market, h: f64, dt: f64) -> f64 {
             Dual::new(mk.lanes(&und, &mk.q), L::from(0.0)),
             Dual::new(mk.lanes(&und, &mk.sig), dsig),
         ];
-        let s = fd_surface::<M, Dual<L>>(&p, &mk.grid(&und, h, dt), &mk.t);
+        let s = pde1d::snapshots::<M, Dual<L>>(&p, &mk.grid(&und, h, dt), &mk.t);
         let spot: L = mk.lanes(&und, &mk.s);
         for m in 0..NM {
             for j in 0..NK {
-                let o = s.option(m, spot, mk.strikes(&und, j));
+                let o = option(&s, m, spot, mk.strikes(&und, j));
                 // even lanes: values + vega; odd lanes: rho (values repeated)
                 chk += sum5(&o) + o.price.t.sum();
             }
@@ -141,16 +143,16 @@ fn run_bumped(mk: &Market, h: f64, dt: f64) -> f64 {
     for und in mk.order.as_chunks::<{ L::W }>().0 {
         let g = mk.grid(und, h, dt);
         let sig: L = mk.lanes(und, &mk.sig);
-        let surfs: Vec<FdSurface<L>> = [(0.0, 1.0), (0.0, 1.01), (0.0, 0.99), (1e-4, 1.0), (-1e-4, 1.0)]
+        let surfs: Vec<Snapshots<L>> = [(0.0, 1.0), (0.0, 1.01), (0.0, 0.99), (1e-4, 1.0), (-1e-4, 1.0)]
             .iter()
-            .map(|&(dr, fs)| fd_surface::<M, L>(&[L::from(RATE + dr), mk.lanes(und, &mk.q), sig * fs], &g, &mk.t))
+            .map(|&(dr, fs)| pde1d::snapshots::<M, L>(&[L::from(RATE + dr), mk.lanes(und, &mk.q), sig * fs], &g, &mk.t))
             .collect();
         let spot: L = mk.lanes(und, &mk.s);
         for m in 0..NM {
             for j in 0..NK {
                 let k: L = mk.strikes(und, j);
-                let o = surfs[0].option(m, spot, k);
-                let pr: Vec<L> = surfs[1..].iter().map(|s| s.option(m, spot, k).price).collect();
+                let o = option(&surfs[0], m, spot, k);
+                let pr: Vec<L> = surfs[1..].iter().map(|s| option(s, m, spot, k).price).collect();
                 let vega = (pr[0] - pr[1]) / (sig * 0.02);
                 let rho = (pr[2] - pr[3]) / 2e-4;
                 chk += sum5(&o) + vega.sum() + rho.sum();
@@ -171,10 +173,10 @@ fn run_book(mk: &Market, h: f64, dt: f64) -> f64 {
             for j in 0..NK {
                 let k: L = mk.strikes(und, j);
                 let w = L::from_fn(|l| mk.pos[und[l] * NM * NK + m * NK + j]) * k;
-                pts.push(SurfacePoint { maturity: m, x: (spot / k).ln(), weight: w });
+                pts.push(Read { horizon: m, x: (spot / k).ln(), weight: w });
             }
         }
-        let bk = fd_surface_book::<M, L>(&p, &mk.grid(und, h, dt), &mk.t, &pts);
+        let bk = pde1d::snapshots_weighted::<M, L>(&p, &mk.grid(und, h, dt), &mk.t, &pts);
         chk += bk.value.sum() + bk.grad.iter().map(|g| g.sum()).sum::<f64>();
     }
     chk

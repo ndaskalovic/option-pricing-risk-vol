@@ -1,15 +1,17 @@
-//! FD surface engine (port of `tests/test_fd_surface.mojo`, same tolerances):
+//! Option surfaces from `pde1d::snapshots` (port of `tests/test_fd_surface.mojo`, same tolerances):
 //! 1. European surface (price, delta, gamma, theta, dV/dK; Dual vega, rho) vs Black-Scholes
 //! 2. Dual tangents (vega, rho) == central bumps of the surface (European exact, American)
 //! 3. American book: reverse-sweep gradient == sum of position-weighted forward tangents
-//! 4. American surface prices vs the single-option engine (fd_price, BsAmericanPut)
+//! 4. American surface prices vs the single-option engine (pde1d::value, BsAmericanPut)
 //!
 //! Also: book gradient == forward tangents for W = 2 lanes with different points, every
 //! Rannacher count and one or several maturities; the argument checks.
 
 use raads::lanes::{F64x2, F64x4};
-use raads::{Dual, FdGrid, FdSurface, Lanes, SurfaceGrid, SurfacePoint, fd_price, fd_surface, fd_surface_book};
-use raads_models::bs_fd::{BsAmericanPut, BsPutMoneyness};
+use raads::{Dual, Lanes};
+use raads_engines::pde1d::{self, Grid, Read, SnapshotGrid, Snapshots};
+use raads_finance::bs_fd::{BsAmericanPut, BsPutMoneyness};
+use raads_finance::option;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 
@@ -29,10 +31,10 @@ fn strikes() -> Vec<f64> {
     (0..13).map(|i| 70.0 + 5.0 * i as f64).collect()
 }
 
-fn grid(h: f64, dt: f64) -> SurfaceGrid {
+fn grid(h: f64, dt: f64) -> SnapshotGrid {
     let z = 5.0 * SIG * 2f64.sqrt();
     let (lo, hi) = ((S0 / 130.0).ln() - z, (S0 / 70.0).ln() + z);
-    SurfaceGrid::new(lo, hi, ((hi - lo) / h) as usize + 1, dt)
+    SnapshotGrid::new(lo, hi, ((hi - lo) / h) as usize + 1, dt)
 }
 
 fn ncdf(x: f64) -> f64 {
@@ -65,18 +67,18 @@ fn dual_params() -> [D2; 3] {
     [D2::new(F64x2::from(R_), F64x2::from_fn(|l| l as f64)), D2::from(Q_), D2::new(F64x2::from(SIG), F64x2::from_fn(|l| 1.0 - l as f64))]
 }
 
-fn tangent_vs_bump<const AM: bool>(c: &mut Checks, g: &SurfaceGrid, rel: f64) {
-    let sa = fd_surface::<BsPutMoneyness<AM>, D2>(&dual_params(), g, &T);
+fn tangent_vs_bump<const AM: bool>(c: &mut Checks, g: &SnapshotGrid, rel: f64) {
+    let sa = pde1d::snapshots::<BsPutMoneyness<AM>, D2>(&dual_params(), g, &T);
     let eps = 1e-6;
-    let bumped: Vec<FdSurface<f64>> = [(0.0, eps), (0.0, -eps), (eps, 0.0), (-eps, 0.0)]
+    let bumped: Vec<Snapshots<f64>> = [(0.0, eps), (0.0, -eps), (eps, 0.0), (-eps, 0.0)]
         .iter()
-        .map(|&(dr, ds)| fd_surface::<BsPutMoneyness<AM>, f64>(&[R_ + dr, Q_, SIG + ds], g, &T))
+        .map(|&(dr, ds)| pde1d::snapshots::<BsPutMoneyness<AM>, f64>(&[R_ + dr, Q_, SIG + ds], g, &T))
         .collect();
     let (mut ev, mut er, mut vscale, mut rscale) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
     for m in 0..T.len() {
         for k in strikes() {
-            let o = sa.option(m, F64x2::from(S0), F64x2::from(k));
-            let pr: Vec<f64> = bumped.iter().map(|b| b.option(m, S0, k).price).collect();
+            let o = option(&sa, m, F64x2::from(S0), F64x2::from(k));
+            let pr: Vec<f64> = bumped.iter().map(|b| option(b, m, S0, k).price).collect();
             let (vb, rb) = ((pr[0] - pr[1]) / (2.0 * eps), (pr[2] - pr[3]) / (2.0 * eps));
             ev = ev.max((o.price.t.lane(0) - vb).abs());
             er = er.max((o.price.t.lane(1) - rb).abs());
@@ -97,11 +99,11 @@ fn fd_surface_engine() {
     // 1. European vs closed form
     let g1 = grid(0.0025, 1.0 / 1000.0);
     println!("1. European surface vs Black-Scholes (h 0.0025, dt 1/1000, nx {})", g1.nx);
-    let se = fd_surface::<BsPutMoneyness<false>, D2>(&dual_params(), &g1, &T);
+    let se = pde1d::snapshots::<BsPutMoneyness<false>, D2>(&dual_params(), &g1, &T);
     let mut emax = [0.0f64; 7];
     for (m, &t) in T.iter().enumerate() {
         for &k in &ks {
-            let o = se.option(m, F64x2::from(S0), F64x2::from(k));
+            let o = option(&se, m, F64x2::from(S0), F64x2::from(k));
             let b = bs_put(k, t);
             let v = |x: D2| x.v.lane(0);
             let got = [v(o.price), v(o.delta), v(o.gamma), v(o.theta), v(o.dvdk), o.price.t.lane(0), o.price.t.lane(1)];
@@ -130,14 +132,14 @@ fn fd_surface_engine() {
     let mut pts = Vec::new();
     for m in 0..T.len() {
         for (ki, &k) in ks.iter().enumerate() {
-            pts.push(SurfacePoint { maturity: m, x: (S0 / k).ln(), weight: pos[m * ks.len() + ki] * k });
+            pts.push(Read { horizon: m, x: (S0 / k).ln(), weight: pos[m * ks.len() + ki] * k });
         }
     }
-    let book = fd_surface_book::<BsPutMoneyness<true>, f64>(&[R_, Q_, SIG], &g2, &T, &pts);
+    let book = pde1d::snapshots_weighted::<BsPutMoneyness<true>, f64>(&[R_, Q_, SIG], &g2, &T, &pts);
     // forward: lanes 0, 1, 2 carry d/dr, d/dq, d/dsigma
     let unit = |j: usize| F64x4::from_fn(|l| if l == j { 1.0 } else { 0.0 });
     let pf = [D4::new(F64x4::from(R_), unit(0)), D4::new(F64x4::from(Q_), unit(1)), D4::new(F64x4::from(SIG), unit(2))];
-    let sf = fd_surface::<BsPutMoneyness<true>, D4>(&pf, &g2, &T);
+    let sf = pde1d::snapshots::<BsPutMoneyness<true>, D4>(&pf, &g2, &T);
     let (mut fwd, mut val) = ([0.0f64; 3], 0.0);
     for m in 0..T.len() {
         for (ki, &k) in ks.iter().enumerate() {
@@ -156,15 +158,15 @@ fn fd_surface_engine() {
     }
 
     // 4. American surface vs the single-option engine (q = 0)
-    println!("4. American surface (q=0) vs fd_price[BsAmericanPut] 801x800 per option");
-    let s0 = fd_surface::<BsPutMoneyness<true>, f64>(&[R_, 0.0, SIG], &g1, &T);
+    println!("4. American surface (q=0) vs pde1d::value[BsAmericanPut] 801x800 per option");
+    let s0 = pde1d::snapshots::<BsPutMoneyness<true>, f64>(&[R_, 0.0, SIG], &g1, &T);
     let mut e4 = 0.0f64;
     for (m, &t) in T.iter().enumerate() {
         for k in [80.0, 100.0, 120.0] {
             let z = 5.0 * SIG * t.sqrt();
-            let g = FdGrid::new(S0.ln() - 0.5 - z, S0.ln() + 0.5 + z, 801, 800);
-            let single = fd_price::<BsAmericanPut, f64>(&[S0, R_, SIG, t, k], &g);
-            e4 = e4.max((s0.option(m, S0, k).price - single).abs());
+            let g = Grid::new(S0.ln() - 0.5 - z, S0.ln() + 0.5 + z, 801, 800);
+            let single = pde1d::value::<BsAmericanPut, f64>(&[S0, R_, SIG, t, k], &g);
+            e4 = e4.max((option(&s0, m, S0, k).price - single).abs());
         }
     }
     c.le("price vs single-option engine (abs, S=100)", e4, 2e-3);
@@ -174,23 +176,23 @@ fn fd_surface_engine() {
 /// Book gradient (reverse) vs forward Dual tangents: W = 2 lanes with different reads and
 /// weights, for a Rannacher count and maturity list. Max relative error.
 fn book_vs_tangents<const AM: bool>(rannacher: usize, mats: &[f64]) -> f64 {
-    let mut g = SurfaceGrid::new(-1.5, 1.5, 241, 1.0 / 200.0);
+    let mut g = SnapshotGrid::new(-1.5, 1.5, 241, 1.0 / 200.0);
     g.rannacher = rannacher;
     let p = [R_, Q_, SIG];
     let mut rng = StdRng::seed_from_u64(11);
-    let pts: Vec<SurfacePoint<F64x2>> = (0..5 * mats.len())
-        .map(|k| SurfacePoint {
-            maturity: k % mats.len(),
+    let pts: Vec<Read<F64x2>> = (0..5 * mats.len())
+        .map(|k| Read {
+            horizon: k % mats.len(),
             x: F64x2::from_fn(|_| rng.random_range(-0.4..0.4)),
             weight: F64x2::from_fn(|_| rng.random_range(-5.0..5.0)),
         })
         .collect();
-    let book = fd_surface_book::<BsPutMoneyness<AM>, F64x2>(&p.map(F64x2::from), &g, mats, &pts);
+    let book = pde1d::snapshots_weighted::<BsPutMoneyness<AM>, F64x2>(&p.map(F64x2::from), &g, mats, &pts);
     let mut e = 0.0f64;
     for j in 0..3 {
         let pd: [D2; 3] = std::array::from_fn(|i| D2::new(F64x2::from(p[i]), F64x2::from(if i == j { 1.0 } else { 0.0 })));
-        let s = fd_surface::<BsPutMoneyness<AM>, D2>(&pd, &g, mats);
-        let fwd = pts.iter().fold(F64x2::from(0.0), |f, pt| f + pt.weight * s.read(pt.maturity, pt.x)[0].t);
+        let s = pde1d::snapshots::<BsPutMoneyness<AM>, D2>(&pd, &g, mats);
+        let fwd = pts.iter().fold(F64x2::from(0.0), |f, pt| f + pt.weight * s.read(pt.horizon, pt.x)[0].t);
         for l in 0..2 {
             e = e.max(rel(book.grad[j].lane(l), fwd.lane(l)));
         }
@@ -211,39 +213,39 @@ fn book_lanes_rannacher_maturities() {
     c.assert_ok();
 }
 
-fn small_grid(nx: usize) -> SurfaceGrid {
-    let mut g = SurfaceGrid::new(-1.0, 1.0, nx, 0.1);
+fn small_grid(nx: usize) -> SnapshotGrid {
+    let mut g = SnapshotGrid::new(-1.0, 1.0, nx, 0.1);
     g.rannacher = 0;
     g
 }
 
 #[test]
 fn surface_five_nodes() {
-    let s = fd_surface::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &small_grid(5), &[0.5]);
+    let s = pde1d::snapshots::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &small_grid(5), &[0.5]);
     assert!(s.read(0, 0.0)[0].is_finite());
 }
 
 #[test]
 #[should_panic(expected = "need at least 5 grid nodes")]
 fn surface_four_nodes() {
-    let _ = fd_surface::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &small_grid(4), &[0.5]);
+    let _ = pde1d::snapshots::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &small_grid(4), &[0.5]);
 }
 
 #[test]
-#[should_panic(expected = "need at least 1 maturity")]
+#[should_panic(expected = "need at least 1 horizon")]
 fn surface_no_maturities() {
-    let _ = fd_surface::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &grid(0.01, 0.01), &[]);
+    let _ = pde1d::snapshots::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &grid(0.01, 0.01), &[]);
 }
 
 #[test]
-#[should_panic(expected = "SurfacePoint::maturity out of range")]
+#[should_panic(expected = "Read::horizon out of range")]
 fn book_maturity_out_of_range() {
-    let pts = [SurfacePoint { maturity: 1, x: 0.0, weight: 1.0 }];
-    let _ = fd_surface_book::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &grid(0.01, 0.01), &[0.5], &pts);
+    let pts = [Read { horizon: 1, x: 0.0, weight: 1.0 }];
+    let _ = pde1d::snapshots_weighted::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &grid(0.01, 0.01), &[0.5], &pts);
 }
 
 #[test]
 #[should_panic(expected = "need a finite time step dt > 0")]
 fn surface_zero_dt() {
-    let _ = fd_surface::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &grid(0.01, 0.0), &[0.5]);
+    let _ = pde1d::snapshots::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &grid(0.01, 0.0), &[0.5]);
 }

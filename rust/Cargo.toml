@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/raads", "crates/raads-codegen", "crates/raads-macros", "crates/raads-engines", "crates/raads-models"]
+members = ["crates/raads", "crates/raads-codegen", "crates/raads-macros", "crates/raads-engines", "crates/raads-finance"]
 
 [workspace.package]
 version = "0.1.0"

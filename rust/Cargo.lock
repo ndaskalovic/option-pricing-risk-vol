@@ -156,6 +156,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "raads-finance"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "raads",
+ "raads-engines",
+ "rand",
+ "rand_distr",
+]
+
+[[package]]
 name = "raads-macros"
 version = "0.1.0"
 dependencies = [
@@ -164,16 +175,6 @@ dependencies = [
  "quote",
  "raads-codegen",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "raads-models"
-version = "0.1.0"
-dependencies = [
- "libm",
- "raads",
- "rand",
- "rand_distr",
 ]
 
 [[package]]

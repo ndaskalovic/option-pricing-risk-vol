@@ -10,9 +10,11 @@
 //!   the kinked payoff needs bumping of the AAD gradient.
 
 use raads::lanes::F64x8;
-use raads::{Arr, Dual, FdGrid, FdModel, McModel, fd_greeks, mc_greeks};
-use raads_models::bs_fd::{BsAmericanPut, BsAmericanPutSmooth, BsEuroCall};
-use raads_models::gbm::{GbmCall, GbmCallSmooth};
+use raads::{Arr, Dual};
+use raads_engines::paths::{self, PathModel};
+use raads_engines::pde1d::{self, Grid, PdeModel};
+use raads_finance::bs_fd::{BsAmericanPut, BsAmericanPutSmooth, BsEuroCall};
+use raads_finance::gbm::{GbmCall, GbmCallSmooth};
 
 mod common;
 use common::{Checks, rel};
@@ -72,8 +74,8 @@ fn bump(p: [f64; NP], j: usize, rel: f64, sign: f64) -> [f64; NP] {
     q
 }
 
-fn grid() -> FdGrid {
-    FdGrid::new(100f64.ln() - 1.2, 100f64.ln() + 1.2, 401, 400)
+fn grid() -> Grid {
+    Grid::new(100f64.ln() - 1.2, 100f64.ln() + 1.2, 401, 400)
 }
 
 fn normals() -> Vec<f32> {
@@ -81,13 +83,13 @@ fn normals() -> Vec<f32> {
 }
 
 /// One forward-over-reverse pass per column (Dual parameters seeded with e_j).
-fn fd_hessian<M: FdModel>(p: [f64; NP]) -> Hessian {
+fn fd_hessian<M: PdeModel>(p: [f64; NP]) -> Hessian {
     let mut h = [0.0; NP * NP];
     let mut price = 0.0;
     for j in 0..NP {
         let pd: M::P<Dual<f64>> = Arr::from_fn(|i| Dual::new(p[i], if i == j { 1.0 } else { 0.0 }));
-        let r = fd_greeks::<M, Dual<f64>>(&pd, &grid());
-        price = r.price.v;
+        let r = pde1d::gradient::<M, Dual<f64>>(&pd, &grid());
+        price = r.value.v;
         for i in 0..NP {
             h[i * NP + j] = r.grad.as_ref()[i].t;
         }
@@ -95,14 +97,14 @@ fn fd_hessian<M: FdModel>(p: [f64; NP]) -> Hessian {
     Hessian { price, h }
 }
 
-fn mc_hessian<M: McModel>(p: [f64; NP], z: &[f32]) -> Hessian {
+fn mc_hessian<M: PathModel>(p: [f64; NP], z: &[f32]) -> Hessian {
     type D = Dual<F64x8>;
     let mut h = [0.0; NP * NP];
     let mut price = 0.0;
     for j in 0..NP {
         let pd: M::P<D> = Arr::from_fn(|i| D::new(F64x8::from(p[i]), F64x8::from(if i == j { 1.0 } else { 0.0 })));
-        let r = mc_greeks::<M, D>(&pd, N_STEPS, N_PATHS, z);
-        price = r.price;
+        let r = paths::gradient::<M, D>(&pd, N_STEPS, N_PATHS, z);
+        price = r.value;
         for i in 0..NP {
             h[i * NP + j] = r.grad_tangent.as_ref()[i];
         }
@@ -111,8 +113,8 @@ fn mc_hessian<M: McModel>(p: [f64; NP], z: &[f32]) -> Hessian {
 }
 
 /// Reference (not AD): central differences of the exact first-order AAD gradient.
-fn fd_hessian_bumped<M: FdModel>(p: [f64; NP], rel: f64) -> Hessian {
-    let g = |q: [f64; NP]| fd_greeks::<M, f64>(&Arr::from_fn(|i| q[i]), &grid());
+fn fd_hessian_bumped<M: PdeModel>(p: [f64; NP], rel: f64) -> Hessian {
+    let g = |q: [f64; NP]| pde1d::gradient::<M, f64>(&Arr::from_fn(|i| q[i]), &grid());
     let mut h = [0.0; NP * NP];
     for j in 0..NP {
         let e = rel * p[j].abs().max(1e-2);
@@ -121,11 +123,11 @@ fn fd_hessian_bumped<M: FdModel>(p: [f64; NP], rel: f64) -> Hessian {
             h[i * NP + j] = (gp.grad.as_ref()[i] - gm.grad.as_ref()[i]) / (2.0 * e);
         }
     }
-    Hessian { price: g(p).price, h }
+    Hessian { price: g(p).value, h }
 }
 
-fn mc_hessian_bumped<M: McModel>(p: [f64; NP], z: &[f32], rel: f64) -> Hessian {
-    let g = |q: [f64; NP]| mc_greeks::<M, F64x8>(&Arr::from_fn(|i| F64x8::from(q[i])), N_STEPS, N_PATHS, z);
+fn mc_hessian_bumped<M: PathModel>(p: [f64; NP], z: &[f32], rel: f64) -> Hessian {
+    let g = |q: [f64; NP]| paths::gradient::<M, F64x8>(&Arr::from_fn(|i| F64x8::from(q[i])), N_STEPS, N_PATHS, z);
     let mut h = [0.0; NP * NP];
     for j in 0..NP {
         let e = rel * p[j].abs().max(1e-2);
@@ -134,7 +136,7 @@ fn mc_hessian_bumped<M: McModel>(p: [f64; NP], z: &[f32], rel: f64) -> Hessian {
             h[i * NP + j] = (gp.grad.as_ref()[i] - gm.grad.as_ref()[i]) / (2.0 * e);
         }
     }
-    Hessian { price: g(p).price, h }
+    Hessian { price: g(p).value, h }
 }
 
 fn max_asym(h: &Hessian) -> f64 {

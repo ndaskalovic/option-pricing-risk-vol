@@ -1,12 +1,12 @@
 //! European call under GBM with the volatility from a raw-SVI slice.
 
-use raads::{AdNum, mc_model};
+use raads::{AdNum, kernels};
 
 /// params: s0, r, T, K, a, b, rho, m, sigma. vol = √(w(K) / T) with T detached, so Theta
 /// holds the SVI vol fixed.
 pub struct SviCall;
 
-#[mc_model]
+#[kernels(raads_engines::paths)]
 impl SviCall {
     pub fn setup<N: AdNum>(p: [N; 9], #[data] n_steps: N) -> [N; 2] {
         let r = p[1];
@@ -26,7 +26,8 @@ impl SviCall {
         [s[0] + c[0] + c[1] * z[0]]
     }
 
-    pub fn payoff<N: AdNum>(s: [N; 1], p: [N; 9], _c: [N; 2]) -> N {
+    /// Discounted payoff.
+    pub fn functional<N: AdNum>(s: [N; 1], p: [N; 9], _c: [N; 2]) -> N {
         (s[0].exp() - p[3]).relu() * (-p[1] * p[2]).exp()
     }
 }

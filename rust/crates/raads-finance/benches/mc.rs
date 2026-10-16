@@ -3,8 +3,9 @@
 //! Every output is consumed.
 
 use raads::lanes::{F32x16, F32x32};
-use raads::{Arr, Lanes, McModel, mc_greeks, mc_price};
-use raads_models::gbm::{GbmAsianCall, GbmCall};
+use raads::{Arr, Lanes};
+use raads_engines::paths::{self, PathModel};
+use raads_finance::gbm::{GbmAsianCall, GbmCall};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand_distr::{Distribution, StandardNormal};
@@ -25,13 +26,13 @@ fn best_ms(mut f: impl FnMut() -> f64) -> (f64, f64) {
     (best, chk)
 }
 
-fn run<M: McModel, L: Lanes>(label: &str, n_paths: usize, z: &[f32]) {
+fn run<M: PathModel, L: Lanes>(label: &str, n_paths: usize, z: &[f32]) {
     let w = L::W;
     let p: M::P<L> = Arr::from_fn(|i| L::from([100.0, 0.01, 0.2, 1.0, 100.0][i]));
-    let (tp, _) = best_ms(|| mc_price::<M, L>(black_box(&p), N_STEPS, n_paths, z).price);
+    let (tp, _) = best_ms(|| paths::value::<M, L>(black_box(&p), N_STEPS, n_paths, z).value);
     let (tg, chk) = best_ms(|| {
-        let r = mc_greeks::<M, L>(black_box(&p), N_STEPS, n_paths, z);
-        r.price + r.grad.as_ref().iter().sum::<f64>()
+        let r = paths::gradient::<M, L>(black_box(&p), N_STEPS, n_paths, z);
+        r.value + r.grad.as_ref().iter().sum::<f64>()
     });
     println!("{label} W={w}: pricing {tp:.3} ms | price + 5 Greeks {tg:.3} ms ({:.2}x) | chk {chk:.4}", tg / tp);
 }
