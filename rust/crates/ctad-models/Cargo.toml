@@ -17,3 +17,7 @@ rand_distr = "0.5"
 [[bench]]
 name = "mc"
 harness = false
+
+[[bench]]
+name = "fd"
+harness = false

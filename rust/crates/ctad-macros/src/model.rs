@@ -93,3 +93,50 @@ pub fn mc(mut imp: ItemImpl) -> Result<TokenStream> {
         }
     })
 }
+
+pub fn fd(mut imp: ItemImpl) -> Result<TokenStream> {
+    let ks = kernels(&mut imp, &["coeffs", "payoff", "spot", "maturity"])?;
+    let sp = imp.self_ty.span();
+    let mut c = Vec::new();
+    for (name, f) in ks {
+        c.push((name, compile(name, f)?));
+    }
+    let get = |n: &str| &c.iter().find(|(m, _)| *m == n).unwrap().1;
+    let (coeffs, payoff, spot, maturity) = (get("coeffs"), get("payoff"), get("spot"), get("maturity"));
+    if coeffs.shapes.len() != 2 || payoff.shapes.len() != 2 || spot.shapes.len() != 1 || maturity.shapes.len() != 1 {
+        return Err(Error::new(sp, "expected coeffs(x, p), payoff(x, p), spot(p), maturity(p)"));
+    }
+    if coeffs.ret != Shape::Array(3) {
+        return Err(Error::new(sp, "coeffs returns `[N; 3]`: a, b, c of V_tau = a V_xx + b V_x - c V"));
+    }
+    let np = len(spot.shapes[0], "spot's parameters", sp)?;
+    // the engine constants move from the inherent block to the trait impl
+    let mut consts = Vec::new();
+    imp.items.retain(|it| match it {
+        ImplItem::Const(k) if k.ident == "AMERICAN" || k.ident == "EXERCISE_EPS" => {
+            let mut k = k.clone();
+            k.vis = syn::Visibility::Inherited;
+            consts.push(k);
+            false
+        }
+        _ => true,
+    });
+    let fns = [coeffs, payoff, spot, maturity].map(|k| {
+        let (e, v) = (&k.eval, &k.vjp);
+        quote!(#e #v)
+    });
+    let ty = imp.self_ty.clone();
+    let generics = imp.generics.clone();
+    let (ig, _, wh) = generics.split_for_impl();
+    replace_sources(&mut imp, &c);
+    Ok(quote! {
+        #imp
+
+        #[allow(clippy::all)]
+        impl #ig ::ctad::FdModel for #ty #wh {
+            type P<T: Copy> = [T; #np];
+            #(#consts)*
+            #(#fns)*
+        }
+    })
+}

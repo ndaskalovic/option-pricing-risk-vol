@@ -26,6 +26,8 @@ pub trait Real: AdNum + AddAssign + SubAssign + Send + Sync + 'static {
     fn nmul_add(self, b: Self, c: Self) -> Self;
     /// Additive identity with every component `-0.0`, so `acc + x` folds to `x`.
     fn neg_zero() -> Self;
+    /// Lane `l` of the result is lane `l` of `f(l)` (per-lane gathers, e.g. interpolation).
+    fn per_lane(f: impl Fn(usize) -> Self) -> Self;
 }
 
 /// Value and one tangent direction, lane-wise.
@@ -194,5 +196,9 @@ impl<L: Lanes> Real for Dual<L> {
     #[inline(always)]
     fn neg_zero() -> Self {
         Dual { v: L::neg_zero(), t: L::neg_zero() }
+    }
+    #[inline]
+    fn per_lane(f: impl Fn(usize) -> Self) -> Self {
+        Dual { v: L::from_fn(|l| f(l).v.lane(l)), t: L::from_fn(|l| f(l).t.lane(l)) }
     }
 }

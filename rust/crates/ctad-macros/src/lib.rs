@@ -27,6 +27,20 @@ pub fn mc_model(attr: TokenStream, item: TokenStream) -> TokenStream {
     model::mc(imp).unwrap_or_else(|e| e.to_compile_error()).into()
 }
 
+/// Compile a finite-difference model: an `impl` block with the kernels
+/// `coeffs(#[data] x: N, p: [N; NP]) -> [N; 3]` (a, b, c of `V_τ = a V_xx + b V_x - c V`),
+/// `payoff(#[data] x: N, p: [N; NP]) -> N`, `spot(p: [N; NP]) -> N` (log-spot) and
+/// `maturity(p: [N; NP]) -> N`, plus optional `const AMERICAN: bool` and
+/// `const EXERCISE_EPS: f64`. Implements `ctad::FdModel`.
+#[proc_macro_attribute]
+pub fn fd_model(attr: TokenStream, item: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        return Error::new(Tokens::from(attr).span(), "`#[fd_model]` takes no arguments").to_compile_error().into();
+    }
+    let imp = syn::parse_macro_input!(item as syn::ItemImpl);
+    model::fd(imp).unwrap_or_else(|e| e.to_compile_error()).into()
+}
+
 /// Compile a kernel.
 ///
 /// ```ignore

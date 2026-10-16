@@ -68,6 +68,10 @@ impl Real for f64 {
     fn neg_zero() -> f64 {
         -0.0
     }
+    #[inline]
+    fn per_lane(f: impl Fn(usize) -> f64) -> f64 {
+        f(0)
+    }
 }
 
 impl Lanes for f64 {

@@ -251,6 +251,10 @@ macro_rules! pack {
             fn neg_zero() -> Self {
                 Self([Self::dup(-0.0); R])
             }
+            #[inline]
+            fn per_lane(f: impl Fn(usize) -> Self) -> Self {
+                <Self as Lanes>::from_fn(|l| f(l).lane(l))
+            }
         }
 
         impl<const R: usize> Lanes for $T<R> {

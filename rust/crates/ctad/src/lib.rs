@@ -9,6 +9,7 @@ extern crate self as ctad;
 
 mod adnum;
 mod arr;
+pub mod fd;
 pub mod lanes;
 pub mod mc;
 mod real;
@@ -19,5 +20,6 @@ pub use arr::Arr;
 pub use ctad_codegen as codegen;
 pub use lanes::Lanes;
 pub use real::{Dual, Real};
-pub use ctad_macros::{kernel, mc_model};
+pub use ctad_macros::{fd_model, kernel, mc_model};
+pub use fd::{FdModel, FdResult, Grid, fd_greeks, fd_price};
 pub use mc::{McModel, McResult, mc_greeks};
