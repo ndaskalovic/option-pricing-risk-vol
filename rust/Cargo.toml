@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/ctad", "crates/ctad-codegen", "crates/ctad-macros"]
+members = ["crates/ctad", "crates/ctad-codegen", "crates/ctad-macros", "crates/ctad-models"]
 
 [workspace.package]
 version = "0.1.0"
@@ -12,6 +12,9 @@ rust-version = "1.89"
 [workspace.dependencies]
 ctad-codegen = { path = "crates/ctad-codegen", version = "0.1.0" }
 ctad-macros = { path = "crates/ctad-macros", version = "0.1.0" }
+
+[profile.test]
+opt-level = 3
 
 [profile.release]
 lto = "fat"

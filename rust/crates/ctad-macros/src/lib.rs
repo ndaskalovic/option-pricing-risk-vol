@@ -10,7 +10,22 @@ use syn::spanned::Spanned;
 use syn::{Error, FnArg, ItemFn, Pat, Result, ReturnType, Type};
 
 mod front;
+mod model;
 use front::{Builder, Param, Shape};
+
+/// Compile a Monte Carlo model: an `impl` block with the kernels
+/// `setup(p: [N; NP], #[data] n_steps: N) -> [N; NC]`, `init(p: [N; NP]) -> [N; NS]`,
+/// `step(s: [N; NS], c: [N; NC], #[data] z: [N; NZ]) -> [N; NS]` and
+/// `payoff(s: [N; NS], p: [N; NP], c: [N; NC]) -> N`, written like `#[kernel]` functions.
+/// Keeps them as associated functions and implements `ctad::McModel`.
+#[proc_macro_attribute]
+pub fn mc_model(attr: TokenStream, item: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        return Error::new(Tokens::from(attr).span(), "`#[mc_model]` takes no arguments").to_compile_error().into();
+    }
+    let imp = syn::parse_macro_input!(item as syn::ItemImpl);
+    model::mc(imp).unwrap_or_else(|e| e.to_compile_error()).into()
+}
 
 /// Compile a kernel.
 ///
@@ -39,6 +54,9 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// A compiled kernel: the rewritten source function and the generated items.
 pub(crate) struct Compiled {
     pub source: ItemFn,
+    /// Parameter shapes in signature order, and the result shape.
+    pub shapes: Vec<Shape>,
+    pub ret: Shape,
     pub eval: Tokens,
     pub vjp: Tokens,
     pub fwd: Tokens,
@@ -49,7 +67,7 @@ pub(crate) struct Compiled {
 
 fn kernel_fn(f: ItemFn) -> Result<Tokens> {
     let c = compile(f, "pub", ["eval", "vjp", "fwd", "bwd"])?;
-    let Compiled { source, eval, vjp, fwd, bwd, nres, graph } = c;
+    let Compiled { source, eval, vjp, fwd, bwd, nres, graph, .. } = c;
     let vis = &source.vis;
     let name = &source.sig.ident;
     let doc = format!("Compiled forward and reverse code of [`{name}`](fn@{name}).");
@@ -144,7 +162,8 @@ pub(crate) fn compile(mut f: ItemFn, vis: &str, names: [&str; 4]) -> Result<Comp
     let nres = emit::nres(&b.g);
     let graph = b.graph_code();
     *f.block = syn::parse2(quote!({ #body }))?;
-    Ok(Compiled { source: f, eval, vjp, fwd, bwd, nres, graph })
+    let shapes = params.iter().map(|p| p.shape).collect();
+    Ok(Compiled { source: f, shapes, ret, eval, vjp, fwd, bwd, nres, graph })
 }
 
 fn is_temp(s: &str) -> bool {

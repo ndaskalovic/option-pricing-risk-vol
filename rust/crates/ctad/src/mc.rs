@@ -1,0 +1,121 @@
+//! Monte Carlo engine: price and gradient w.r.t. every model parameter (pathwise AAD).
+//!
+//! A model is four small kernels written once against [`AdNum`](crate::AdNum) inside an
+//! `impl` block marked [`#[mc_model]`](crate::mc_model):
+//!
+//! ```text
+//! setup(p, #[data] n_steps) -> c     once per run    (per-step coefficients)
+//! init(p)                   -> s0    once per run    (initial state)
+//! step(s, c, #[data] z)     -> s'    every step      (z: NZ normal draws)
+//! payoff(s, p, c)           -> value every path
+//! ```
+//!
+//! Per SIMD path the engine runs the steps forward (saving only the residuals the step's
+//! reverse sweep reads), the payoff fused with its reverse sweep, and the steps backward;
+//! the reverse of `init` and `setup` runs once at the end. Lanes are paths.
+
+use crate::{Arr, Lanes, Real};
+
+/// A model compiled by [`#[mc_model]`](crate::mc_model). The associated array types fix the
+/// sizes: parameters `P`, per-step coefficients `C`, state `S`, normals per step `Z`.
+pub trait McModel {
+    type P<T: Copy>: Arr<T>;
+    type C<T: Copy>: Arr<T>;
+    type S<T: Copy>: Arr<T>;
+    type Z<T: Copy>: Arr<T>;
+    /// Residuals `step_fwd` saves per step.
+    const STEP_NRES: usize;
+
+    fn setup_eval<R: Real>(p: &Self::P<R>, n_steps: R) -> Self::C<R>;
+    fn setup_vjp<R: Real>(p: &Self::P<R>, n_steps: R, a_y: &Self::C<R>, a_p: &mut Self::P<R>) -> Self::C<R>;
+    fn init_eval<R: Real>(p: &Self::P<R>) -> Self::S<R>;
+    fn init_vjp<R: Real>(p: &Self::P<R>, a_y: &Self::S<R>, a_p: &mut Self::P<R>) -> Self::S<R>;
+    fn step_eval<R: Real>(s: &Self::S<R>, c: &Self::C<R>, z: &Self::Z<R>) -> Self::S<R>;
+    fn step_fwd<R: Real>(s: &Self::S<R>, c: &Self::C<R>, z: &Self::Z<R>, res: &mut [R]) -> Self::S<R>;
+    fn step_bwd<R: Real>(z: &Self::Z<R>, res: &[R], a_y: &Self::S<R>, a_s: &mut Self::S<R>, a_c: &mut Self::C<R>);
+    fn payoff_eval<R: Real>(s: &Self::S<R>, p: &Self::P<R>, c: &Self::C<R>) -> R;
+    #[allow(clippy::too_many_arguments)]
+    fn payoff_vjp<R: Real>(
+        s: &Self::S<R>,
+        p: &Self::P<R>,
+        c: &Self::C<R>,
+        a_y: R,
+        a_s: &mut Self::S<R>,
+        a_p: &mut Self::P<R>,
+        a_c: &mut Self::C<R>,
+    ) -> R;
+}
+
+/// Path means of the price and gradient, and their tangents: zero for a [`Lanes`] value
+/// type; for [`Dual`](crate::Dual) parameters seeded with a direction v,
+/// `price_tangent` = grad · v and `grad_tangent` = H v.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct McResult<G> {
+    pub price: f64,
+    pub grad: G,
+    pub price_tangent: f64,
+    pub grad_tangent: G,
+}
+
+/// Price and gradient (path means) in one pass.
+///
+/// `normals` holds `n_paths * n_steps * NZ * W` draws (`W` = lanes of `R`): path block `i`
+/// starts at `i * n_steps * NZ * W`, step `k` at `+ k * NZ * W`, draw `j` at `+ j * W`.
+/// `n_paths` counts SIMD path blocks (`W` scalar paths each).
+pub fn mc_greeks<M: McModel, R: Real>(params: &M::P<R>, n_steps: usize, n_paths: usize, normals: &[f32]) -> McResult<M::P<f64>> {
+    let w = R::Lanes::W;
+    let nz = <M::Z<R> as Arr<R>>::LEN;
+    let nres = M::STEP_NRES;
+    let stride = n_steps * nz * w;
+    assert!(normals.len() >= n_paths * stride, "need n_paths * n_steps * NZ * W normals");
+    let load = |zk: &[f32]| {
+        let mut z: M::Z<R> = Arr::splat(R::from(0.0));
+        for (j, zj) in z.as_mut().iter_mut().enumerate() {
+            *zj = R::lift(R::Lanes::load_f32(&zk[j * w..]));
+        }
+        z
+    };
+
+    // path-invariant parts: once per run
+    let nd = R::from(n_steps as f64);
+    let c = M::setup_eval(params, nd);
+    let s0 = M::init_eval(params);
+
+    let mut res = vec![R::from(0.0); n_steps * nres];
+    let mut a_c: M::C<R> = Arr::splat(R::from(0.0));
+    let mut a_s0: M::S<R> = Arr::splat(R::from(0.0));
+    let mut a_p: M::P<R> = Arr::splat(R::from(0.0));
+    let mut acc = R::from(0.0);
+    for path in normals.chunks_exact(stride).take(n_paths) {
+        let mut s = s0;
+        for (k, zk) in path.chunks_exact(nz * w).enumerate() {
+            let z = load(zk);
+            s = if nres == 0 { M::step_eval(&s, &c, &z) } else { M::step_fwd(&s, &c, &z, &mut res[k * nres..(k + 1) * nres]) };
+        }
+        let mut a_s: M::S<R> = Arr::splat(R::neg_zero());
+        acc += M::payoff_vjp(&s, params, &c, R::from(1.0), &mut a_s, &mut a_p, &mut a_c);
+        for (k, zk) in path.chunks_exact(nz * w).enumerate().rev() {
+            let z = load(zk);
+            let mut a_prev: M::S<R> = Arr::splat(R::neg_zero());
+            M::step_bwd(&z, &res[k * nres..(k + 1) * nres], &a_s, &mut a_prev, &mut a_c);
+            a_s = a_prev;
+        }
+        for (a0, a) in a_s0.as_mut().iter_mut().zip(a_s.as_ref()) {
+            *a0 += *a;
+        }
+    }
+
+    // reverse through the path-invariant parts once
+    M::init_vjp(params, &a_s0, &mut a_p);
+    M::setup_vjp(params, nd, &a_c, &mut a_p);
+
+    let scale = 1.0 / (n_paths * w) as f64;
+    let mean = |v: R::Lanes| v.sum() * scale;
+    let mut grad: M::P<f64> = Arr::splat(0.0);
+    let mut grad_tangent: M::P<f64> = Arr::splat(0.0);
+    for (j, a) in a_p.as_ref().iter().enumerate() {
+        grad.as_mut()[j] = mean(a.value());
+        grad_tangent.as_mut()[j] = mean(a.tangent());
+    }
+    McResult { price: mean(acc.value()), grad, price_tangent: mean(acc.tangent()), grad_tangent }
+}
