@@ -138,7 +138,7 @@ fn run_dual<L: Lanes>(mk: &Market, h: f64, dt: f64) -> f64 {
 fn run_bumped(mk: &Market, h: f64, dt: f64) -> f64 {
     type L = F64x4;
     let mut chk = 0.0;
-    for und in mk.order.chunks_exact(L::W) {
+    for und in mk.order.as_chunks::<{ L::W }>().0 {
         let g = mk.grid(und, h, dt);
         let sig: L = mk.lanes(und, &mk.sig);
         let surfs: Vec<FdSurface<L>> = [(0.0, 1.0), (0.0, 1.01), (0.0, 0.99), (1e-4, 1.0), (-1e-4, 1.0)]
@@ -163,7 +163,7 @@ fn run_bumped(mk: &Market, h: f64, dt: f64) -> f64 {
 fn run_book(mk: &Market, h: f64, dt: f64) -> f64 {
     type L = F64x4;
     let mut chk = 0.0;
-    for und in mk.order.chunks_exact(L::W) {
+    for und in mk.order.as_chunks::<{ L::W }>().0 {
         let p = [L::from(RATE), mk.lanes(und, &mk.q), mk.lanes(und, &mk.sig)];
         let spot: L = mk.lanes(und, &mk.s);
         let mut pts = Vec::with_capacity(NM * NK);
