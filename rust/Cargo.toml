@@ -13,8 +13,8 @@ keywords = ["autodiff", "aad", "greeks", "option-pricing", "simd"]
 categories = ["mathematics", "science", "finance"]
 
 [workspace.dependencies]
-raads-codegen = { path = "crates/raads-codegen", version = "0.1.0" }
-raads-macros = { path = "crates/raads-macros", version = "0.1.0" }
+raads-codegen = { path = "crates/raads-codegen", version = "=0.1.0" }
+raads-macros = { path = "crates/raads-macros", version = "=0.1.0" }
 
 [profile.test]
 opt-level = 3

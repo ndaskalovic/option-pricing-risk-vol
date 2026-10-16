@@ -5,6 +5,19 @@
 //! grids) and return the price and every first-order Greek in one run; running them on
 //! [`Dual`] values adds Hessian-vector products.
 //!
+//! # Build flags
+//!
+//! The SIMD backend is chosen at compile time from the enabled target features (no runtime
+//! dispatch). aarch64 always uses NEON. **On x86_64, build with `-C target-cpu=x86-64-v3`
+//! (AVX2 + FMA), or `native` / `x86-64-v4` for AVX-512**; default x86_64 builds use the
+//! portable fallback (no SIMD `exp`, no FMA), which is much slower. For example in
+//! `.cargo/config.toml`:
+//!
+//! ```toml
+//! [target.'cfg(target_arch = "x86_64")']
+//! rustflags = ["-C", "target-cpu=x86-64-v3"]
+//! ```
+//!
 //! # Monte Carlo
 //!
 //! A Black-Scholes call in log space, priced with every Greek in one pass. Lanes of the
@@ -110,18 +123,18 @@ pub use adnum::AdNum;
 pub use arr::Arr;
 pub use fd::{FdGrid, FdModel, FdResult, fd_greeks, fd_price};
 pub use lanes::Lanes;
-pub use mc::{McModel, McResult, mc_greeks, mc_price};
+pub use mc::{McModel, McPrice, McResult, mc_greeks, mc_price};
 pub use raads_macros::{fd_model, kernel, mc_model};
 pub use real::{Dual, Real};
-pub use surface::{FdBook, FdSurface, SurfaceGrid, SurfacePoint, fd_surface, fd_surface_book};
+pub use surface::{FdBook, FdSurface, SurfaceGrid, SurfaceOption, SurfacePoint, fd_surface, fd_surface_book};
 
 /// Everything a model or a pricing call needs: `use raads::prelude::*;`.
 pub mod prelude {
     pub use crate::lanes::{F32x4, F32x8, F32x16, F32x32, F64x2, F64x4, F64x8, F64x16};
     pub use crate::{AdNum, Arr, Dual, Lanes, Real, fd_model, kernel, mc_model};
-    pub use crate::{FdBook, FdSurface, SurfaceGrid, SurfacePoint, fd_surface, fd_surface_book};
+    pub use crate::{FdBook, FdSurface, SurfaceGrid, SurfaceOption, SurfacePoint, fd_surface, fd_surface_book};
     pub use crate::{FdGrid, FdModel, FdResult, fd_greeks, fd_price};
-    pub use crate::{McModel, McResult, mc_greeks, mc_price};
+    pub use crate::{McModel, McPrice, McResult, mc_greeks, mc_price};
 }
 
 /// Used by macro-generated code and tests; not public API.
@@ -130,6 +143,11 @@ pub mod __private {
     pub use crate::trace::{Tracer, trace};
     pub use raads_codegen as codegen;
 }
+
+/// Compiles and runs the README example.
+#[cfg(doctest)]
+#[doc = include_str!("../../../README.md")]
+struct ReadmeDoctest;
 
 mod sealed {
     /// Supertrait of [`AdNum`](crate::AdNum) (and so of [`Real`](crate::Real) and

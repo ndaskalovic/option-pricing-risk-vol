@@ -18,6 +18,7 @@ raads-macros.workspace = true
 
 [dev-dependencies]
 rand = "0.9"
+rand_distr = "0.5"
 trybuild = "1"
 
 [package.metadata.docs.rs]

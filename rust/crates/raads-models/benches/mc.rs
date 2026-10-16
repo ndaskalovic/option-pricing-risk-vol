@@ -28,7 +28,7 @@ fn best_ms(mut f: impl FnMut() -> f64) -> (f64, f64) {
 fn run<M: McModel, L: Lanes>(label: &str, n_paths: usize, z: &[f32]) {
     let w = L::W;
     let p: M::P<L> = Arr::from_fn(|i| L::from([100.0, 0.01, 0.2, 1.0, 100.0][i]));
-    let (tp, _) = best_ms(|| mc_price::<M, L>(black_box(&p), N_STEPS, n_paths, z));
+    let (tp, _) = best_ms(|| mc_price::<M, L>(black_box(&p), N_STEPS, n_paths, z).price);
     let (tg, chk) = best_ms(|| {
         let r = mc_greeks::<M, L>(black_box(&p), N_STEPS, n_paths, z);
         r.price + r.grad.as_ref().iter().sum::<f64>()

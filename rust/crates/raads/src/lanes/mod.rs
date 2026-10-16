@@ -1,12 +1,26 @@
 //! SIMD packs: W lanes of `f32` or `f64` (lanes = Monte Carlo paths or independent problems).
 //!
 //! Each instruction set has its own implementation behind [`Lanes`]: NEON on aarch64,
-//! with AVX2/AVX-512 on x86_64 and plain `f64` for one lane. Engines and generated
+//! AVX2/AVX-512 on x86_64 when those target features are enabled at compile time (else plain
+//! arrays; see the crate docs for build flags) and plain `f64` for one lane. Engines and generated
 //! kernels are written against [`Real`], so the same source compiles to each.
 //! The packs are named by the aliases below (`F32x4` … `F64x16`) and `f64`.
 
 use crate::Real;
 use std::fmt::Debug;
+
+/// `$a·$b + $c` for the scalar and portable backends: fused where the target has an FMA
+/// instruction (aarch64, x86_64 with `fma`), else two rounded ops, because std `mul_add` is a
+/// libm call there.
+macro_rules! mul_add {
+    ($a:expr, $b:expr, $c:expr) => {{
+        #[cfg(any(target_arch = "aarch64", target_feature = "fma"))]
+        let r = $a.mul_add($b, $c);
+        #[cfg(not(any(target_arch = "aarch64", target_feature = "fma")))]
+        let r = $a * $b + $c;
+        r
+    }};
+}
 
 mod scalar;
 
@@ -62,7 +76,7 @@ pub trait Lanes: Real<Lanes = Self> + Debug + PartialEq {
 
 /// Polynomial `exp` shared by the vector backends: `exp(x) = 2^n · p(r)`, `n = round(x / ln2)`,
 /// `r = x - n·ln2` (two-constant Cody-Waite), `p` the Taylor polynomial in FMA Horner form.
-/// Max relative error ≈ 2e-7 (`f32`, degree 6) and ≈ 6e-16 (`f64`, degree 12).
+/// Max relative error ≈ 2.5e-7 (`f32`, degree 6) and ≈ 6e-16 (`f64`, degree 12).
 ///
 /// `x` is clamped to `[LO, HI]` first (NaN passes through). `HI` lies just above
 /// `ln(MAX)`, so results are finite up to the true overflow threshold and `+inf` above it.
@@ -244,6 +258,13 @@ mod aliases {
 }
 
 pub use aliases::*;
+
+/// The registers inside a pack are not public API:
+/// ```compile_fail
+/// let _ = raads::lanes::F32x4::from(1.0).0;
+/// ```
+#[cfg(doctest)]
+struct PrivatePackFields;
 
 #[cfg(test)]
 mod tests;

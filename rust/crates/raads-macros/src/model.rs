@@ -5,7 +5,7 @@ use crate::front::Shape;
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::spanned::Spanned;
-use syn::{Error, ImplItem, ImplItemFn, ItemFn, ItemImpl, Result};
+use syn::{Error, GenericParam, ImplItem, ImplItemFn, ItemFn, ItemImpl, Result};
 
 /// Expected shape of a kernel parameter or result: `N`, `[N; k]`, or `[N; DIM]` with a
 /// dimension shared across the kernels.
@@ -62,9 +62,13 @@ impl Spec {
 }
 
 /// Kernels of the block in `specs` order, compiled; other items are kept as they are.
-fn compile_all(imp: &ItemImpl, specs: &[Spec]) -> Result<Vec<Compiled>> {
+fn compile_all(imp: &ItemImpl, specs: &[Spec], krate: &TokenStream) -> Result<Vec<Compiled>> {
     if imp.trait_.is_some() {
         return Err(Error::new(imp.span(), "put the model attribute on an inherent `impl Model { ... }` block"));
+    }
+    // the generated methods are generic over `R`
+    if let Some(p) = imp.generics.params.iter().find(|p| matches!(p, GenericParam::Type(t) if t.ident == "R")) {
+        return Err(Error::new(p.span(), "the generic parameter name `R` is reserved by the generated code"));
     }
     let mut out = Vec::new();
     let mut errors: Option<Error> = None;
@@ -74,7 +78,7 @@ fn compile_all(imp: &ItemImpl, specs: &[Spec]) -> Result<Vec<Compiled>> {
             _ => None,
         });
         let r = match found {
-            Some(f) => compile(spec.name, to_item_fn(f)),
+            Some(f) => compile(spec.name, to_item_fn(f), krate),
             None => Err(Error::new(imp.self_ty.span(), format!("missing kernel {}", spec.signature()))),
         };
         match r {
@@ -149,23 +153,26 @@ fn replace_sources(imp: &mut ItemImpl, compiled: &[Compiled]) {
     }
 }
 
-fn compile(name: &str, f: ItemFn) -> Result<Compiled> {
+fn compile(name: &str, f: ItemFn, krate: &TokenStream) -> Result<Compiled> {
     let n = |k: &str| format!("{name}_{k}");
-    crate::compile(f, "", [&n("eval"), &n("vjp"), &n("fwd"), &n("bwd")])
+    crate::compile(f, "", [&n("eval"), &n("vjp"), &n("fwd"), &n("bwd")], krate)
 }
 
 fn dim(dims: &[(&str, usize)], v: &str) -> usize {
     dims.iter().find(|(w, _)| *w == v).unwrap().1
 }
 
+// The trait impls name the GAT parameter `__RaadsT` (the impl's own generics may use `T`)
+// and hide the generated kernel functions, which are engine internals.
+
 pub fn mc(mut imp: ItemImpl) -> Result<TokenStream> {
-    let c = compile_all(&imp, &MC)?;
+    let krate = crate::krate();
+    let c = compile_all(&imp, &MC, &krate)?;
     let dims = check(&MC, &c)?;
     let [np, nc, ns, nz] = ["NP", "NC", "NS", "NZ"].map(|v| dim(&dims, v));
     let [setup, init, step, payoff] = [&c[0], &c[1], &c[2], &c[3]];
     let nres = step.nres;
-    let (se, sv, ie, iv) = (&setup.eval, &setup.vjp, &init.eval, &init.vjp);
-    let (te, tf, tb, pe, pv) = (&step.eval, &step.fwd, &step.bwd, &payoff.eval, &payoff.vjp);
+    let fns = [&setup.eval, &setup.vjp, &init.eval, &init.vjp, &step.eval, &step.fwd, &step.bwd, &payoff.eval, &payoff.vjp];
     let ty = imp.self_ty.clone();
     let generics = imp.generics.clone();
     let (ig, _, wh) = generics.split_for_impl();
@@ -174,36 +181,38 @@ pub fn mc(mut imp: ItemImpl) -> Result<TokenStream> {
         #imp
 
         #[allow(clippy::all)]
-        impl #ig ::raads::McModel for #ty #wh {
-            type P<T: Copy> = [T; #np];
-            type C<T: Copy> = [T; #nc];
-            type S<T: Copy> = [T; #ns];
-            type Z<T: Copy> = [T; #nz];
+        impl #ig #krate::McModel for #ty #wh {
+            type P<__RaadsT: Copy> = [__RaadsT; #np];
+            type C<__RaadsT: Copy> = [__RaadsT; #nc];
+            type S<__RaadsT: Copy> = [__RaadsT; #ns];
+            type Z<__RaadsT: Copy> = [__RaadsT; #nz];
+            #[doc(hidden)]
             const STEP_NRES: usize = #nres;
-            #se #sv #ie #iv #te #tf #tb #pe #pv
+            #(#[doc(hidden)] #fns)*
         }
     })
 }
 
 pub fn fd(mut imp: ItemImpl) -> Result<TokenStream> {
-    let c = compile_all(&imp, &FD)?;
+    let krate = crate::krate();
+    let c = compile_all(&imp, &FD, &krate)?;
     let np = dim(&check(&FD, &c)?, "NP");
-    // the engine constants move from the inherent block to the trait impl
-    let mut consts = Vec::new();
-    imp.items.retain(|it| match it {
-        ImplItem::Const(k) if k.ident == "AMERICAN" || k.ident == "EXERCISE_EPS" => {
-            let mut k = k.clone();
-            k.vis = syn::Visibility::Inherited;
-            consts.push(k);
-            false
-        }
-        _ => true,
-    });
-    let fns = c.iter().map(|k| {
-        let (e, v) = (&k.eval, &k.vjp);
-        quote!(#e #v)
-    });
     let ty = imp.self_ty.clone();
+    // The engine constants stay inherent, so a kernel can read `Self::EXERCISE_EPS` and user
+    // code `Model::AMERICAN` without the trait in scope. The trait impl forwards to them:
+    // `<Ty>::NAME` resolves to the inherent const, which takes precedence over the trait's.
+    let consts: Vec<TokenStream> = imp
+        .items
+        .iter()
+        .filter_map(|it| match it {
+            ImplItem::Const(k) if k.ident == "AMERICAN" || k.ident == "EXERCISE_EPS" => {
+                let (id, t) = (&k.ident, &k.ty);
+                Some(quote!(const #id: #t = <#ty>::#id;))
+            }
+            _ => None,
+        })
+        .collect();
+    let fns = c.iter().flat_map(|k| [&k.eval, &k.vjp]);
     let generics = imp.generics.clone();
     let (ig, _, wh) = generics.split_for_impl();
     replace_sources(&mut imp, &c);
@@ -211,10 +220,10 @@ pub fn fd(mut imp: ItemImpl) -> Result<TokenStream> {
         #imp
 
         #[allow(clippy::all)]
-        impl #ig ::raads::FdModel for #ty #wh {
-            type P<T: Copy> = [T; #np];
+        impl #ig #krate::FdModel for #ty #wh {
+            type P<__RaadsT: Copy> = [__RaadsT; #np];
             #(#consts)*
-            #(#fns)*
+            #(#[doc(hidden)] #fns)*
         }
     })
 }

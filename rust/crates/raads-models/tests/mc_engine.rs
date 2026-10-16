@@ -8,7 +8,7 @@
 //! Also: f32 lanes == f64 lanes on the same normals (no accumulation bias), a two-factor model
 //! (NZ = 2, saved residuals) vs a scalar reference, and the argument checks.
 
-use raads::lanes::{F32x8, F64x4, F64x8};
+use raads::lanes::{F32x8, F32x32, F64x4, F64x8};
 use raads::{AdNum, Arr, Dual, McModel, mc_greeks, mc_model, mc_price};
 use raads_models::gbm::{GbmAsianCall, GbmCall};
 use raads_models::svi::SviCall;
@@ -206,11 +206,29 @@ fn mc_short_normals() {
     let _ = mc_greeks::<GbmCall, V>(&[100.0, 0.01, 0.2, 1.0, 100.0].map(V::from), 52, 2 * W, &[0.0; 52 * W]);
 }
 
+/// Deep in the money with tiny vol: payoff spread ≈ 1e-3 of the mean, where an unshifted f32
+/// sum of squares cancels against n·mean² (std_err 3–4% low).
+#[test]
+fn mc_std_err_f32_small_variance() {
+    let n_paths = 1 << 20;
+    let z = normals(n_paths, 11);
+    let p = [100.0, 0.01, 0.001, 1.0, 1.0];
+    let exact = 100.0 * 0.001 / (n_paths as f64).sqrt();
+    let r64 = mc_greeks::<GbmCall, F64x4>(&p.map(F64x4::from), 1, n_paths, &z);
+    let mut c = Checks::default();
+    c.rel("f64 std_err vs S0 sigma / sqrt(n)", r64.std_err, exact, 1e-2);
+    c.rel("F32x8 std_err vs f64", mc_greeks::<GbmCall, F32x8>(&p.map(F32x8::from), 1, n_paths, &z).std_err, r64.std_err, 1e-2);
+    c.rel("F32x32 std_err vs f64", mc_greeks::<GbmCall, F32x32>(&p.map(F32x32::from), 1, n_paths, &z).std_err, r64.std_err, 1e-2);
+    c.rel("F32x32 mc_price std_err vs f64", mc_price::<GbmCall, F32x32>(&p.map(F32x32::from), 1, n_paths, &z).std_err, r64.std_err, 1e-2);
+    c.assert_ok();
+}
+
 #[test]
 fn mc_price_matches_greeks() {
     let z = normals(4096 * 12, 3);
     let p = [100.0, 0.01, 0.2, 1.0, 100.0].map(V::from);
     let r = mc_greeks::<GbmAsianCall, V>(&p, 12, 4096, &z);
-    let price = mc_price::<GbmAsianCall, V>(&p, 12, 4096, &z);
-    assert!((price - r.price).abs() <= 1e-12 * r.price, "{price} vs {}", r.price);
+    let pr = mc_price::<GbmAsianCall, V>(&p, 12, 4096, &z);
+    assert!((pr.price - r.price).abs() <= 1e-12 * r.price, "{} vs {}", pr.price, r.price);
+    assert!((pr.std_err - r.std_err).abs() <= 1e-9 * r.std_err, "{} vs {}", pr.std_err, r.std_err);
 }

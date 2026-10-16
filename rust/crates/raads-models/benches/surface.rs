@@ -8,7 +8,7 @@
 //! Every output is consumed. Pass `quick` to run h = 0.02 and 0.01 only.
 
 use raads::lanes::{F64x4, F64x8};
-use raads::{AdNum, Dual, FdSurface, Lanes, Real, SurfaceGrid, SurfacePoint, fd_surface, fd_surface_book};
+use raads::{AdNum, Dual, FdSurface, Lanes, Real, SurfaceGrid, SurfaceOption, SurfacePoint, fd_surface, fd_surface_book};
 use raads_models::bs_fd::BsPutMoneyness;
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -90,8 +90,8 @@ impl Market {
     }
 }
 
-fn sum5<R: Real>(o: &[R; 5]) -> f64 {
-    o.iter().map(|x| x.value().sum()).sum()
+fn sum5<R: Real>(o: &SurfaceOption<R>) -> f64 {
+    [o.price, o.delta, o.gamma, o.theta, o.dvdk].iter().map(|x| x.value().sum()).sum()
 }
 
 fn run_values<L: Lanes>(mk: &Market, h: f64, dt: f64) -> f64 {
@@ -128,7 +128,7 @@ fn run_dual<L: Lanes>(mk: &Market, h: f64, dt: f64) -> f64 {
             for j in 0..NK {
                 let o = s.option(m, spot, mk.strikes(&und, j));
                 // even lanes: values + vega; odd lanes: rho (values repeated)
-                chk += sum5(&o) + o[0].t.sum();
+                chk += sum5(&o) + o.price.t.sum();
             }
         }
     }
@@ -150,7 +150,7 @@ fn run_bumped(mk: &Market, h: f64, dt: f64) -> f64 {
             for j in 0..NK {
                 let k: L = mk.strikes(und, j);
                 let o = surfs[0].option(m, spot, k);
-                let pr: Vec<L> = surfs[1..].iter().map(|s| s.option(m, spot, k)[0]).collect();
+                let pr: Vec<L> = surfs[1..].iter().map(|s| s.option(m, spot, k).price).collect();
                 let vega = (pr[0] - pr[1]) / (sig * 0.02);
                 let rho = (pr[2] - pr[3]) / 2e-4;
                 chk += sum5(&o) + vega.sum() + rho.sum();

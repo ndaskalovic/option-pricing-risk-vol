@@ -8,6 +8,8 @@ You write a model once as a few small functions. A macro differentiates them at 
 
 ```rust
 use raads::prelude::*;
+use rand::{SeedableRng, rngs::StdRng};
+use rand_distr::{Distribution, StandardNormal};
 
 pub struct GbmCall; // params: s0, r, sigma, T, K
 
@@ -28,10 +30,16 @@ impl GbmCall {
     }
 }
 
+// n_paths * n_steps standard normal draws (f32); n_paths a multiple of the lanes (32)
+let (n_steps, n_paths) = (52, 100_000);
+let normals: Vec<f32> = StandardNormal.sample_iter(StdRng::seed_from_u64(7)).take(n_paths * n_steps).collect();
+
 let params = [100.0, 0.01, 0.2, 1.0, 100.0].map(F32x32::from);
 let r = mc_greeks::<GbmCall, F32x32>(&params, n_steps, n_paths, &normals);
-println!("{} {} {}", r.price, r.grad[0], r.grad[2]); // price, delta, vega
+println!("{} ± {} delta {} vega {}", r.price, r.std_err, r.grad[0], r.grad[2]);
 ```
+
+On x86_64, build with `RUSTFLAGS="-C target-cpu=x86-64-v3"` (AVX2 + FMA) or `native`; default builds use the portable fallback (no SIMD `exp`, no FMA), which is much slower.
 
 ## License
 

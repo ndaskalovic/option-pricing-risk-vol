@@ -1,4 +1,7 @@
 //! NEON packs: `F32<R>` = R × `float32x4_t` (4R lanes), `F64<R>` = R × `float64x2_t` (2R lanes).
+//!
+//! NEON is baseline on aarch64, so the register-only intrinsics are always sound; the only
+//! `unsafe` obligations are the in-bounds pointers of loads and stores, noted where they occur.
 
 #![allow(unused_unsafe)]
 
@@ -59,7 +62,7 @@ macro_rules! pack {
     ) => {
         $(#[$doc])*
         #[derive(Clone, Copy)]
-        pub struct $T<const R: usize>(pub [$reg; R]);
+        pub struct $T<const R: usize>([$reg; R]);
 
         impl<const R: usize> $T<R> {
             #[inline(always)]
@@ -78,6 +81,7 @@ macro_rules! pack {
             fn regs(self) -> [[$e; $n]; R] {
                 self.0.map(|r| {
                     let mut a = [0.0; $n];
+                    // SAFETY: `a` holds one register's `$n` lanes
                     unsafe { $st(a.as_mut_ptr(), r) };
                     a
                 })
@@ -86,6 +90,7 @@ macro_rules! pack {
             fn per_lane(self, f: impl Fn($e) -> $e) -> Self {
                 self.map(|r| {
                     let mut a = [0.0; $n];
+                    // SAFETY: `a` holds one register's `$n` lanes
                     unsafe { $st(a.as_mut_ptr(), r) };
                     let a = a.map(&f);
                     unsafe { $ld(a.as_ptr()) }
@@ -264,17 +269,20 @@ macro_rules! pack {
             #[inline(always)]
             fn load(src: &[$e]) -> Self {
                 assert!(src.len() >= Self::W);
+                // SAFETY: register `i` reads `src[$n * i..$n * (i + 1)]`, in bounds by the assert
                 Self(std::array::from_fn(|i| unsafe { $ld(src.as_ptr().add($n * i)) }))
             }
             #[inline(always)]
             fn load_f32(src: &[f32]) -> Self {
                 assert!(src.len() >= Self::W);
+                // SAFETY: register `i` reads the `$n` `f32`s `src[$n * i..$n * (i + 1)]`, in bounds by the assert
                 Self(std::array::from_fn(|i| unsafe { $ld_f32(src.as_ptr().add($n * i)) }))
             }
             #[inline(always)]
             fn store(self, dst: &mut [$e]) {
                 assert!(dst.len() >= Self::W);
                 for (i, r) in self.0.iter().enumerate() {
+                    // SAFETY: register `i` writes `dst[$n * i..$n * (i + 1)]`, in bounds by the assert
                     unsafe { $st(dst.as_mut_ptr().add($n * i), *r) };
                 }
             }
@@ -286,6 +294,7 @@ macro_rules! pack {
             fn from_fn(mut f: impl FnMut(usize) -> f64) -> Self {
                 Self(std::array::from_fn(|r| {
                     let a: [$e; $n] = std::array::from_fn(|l| f($n * r + l) as $e);
+                    // SAFETY: `a` holds one register's `$n` lanes
                     unsafe { $ld(a.as_ptr()) }
                 }))
             }

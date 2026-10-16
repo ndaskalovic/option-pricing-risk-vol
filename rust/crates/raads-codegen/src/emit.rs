@@ -1,4 +1,5 @@
-//! Straight-line Rust for one kernel graph, generic over `R: ::raads::Real`.
+//! Straight-line Rust for one kernel graph, generic over `R: <krate>::Real`, where `krate`
+//! is the path of the `raads` crate as the calling crate names it (usually `::raads`).
 //!
 //! Four functions per kernel, all `#[inline(always)]`:
 //! - `eval(inputs..) -> y`
@@ -101,8 +102,9 @@ pub fn nres(g: &Graph) -> usize {
     Analysis::new(g).res.len()
 }
 
-/// Rust source of one function `name` (with visibility/qualifiers `vis`, e.g. `"pub"`).
-pub fn function(g: &Graph, sig: &Signature, kind: Kind, vis: &str, name: &str) -> String {
+/// Rust source of one function `name` (with visibility/qualifiers `vis`, e.g. `"pub"`);
+/// `krate` is the path of the `raads` crate, e.g. `"::raads"`.
+pub fn function(g: &Graph, sig: &Signature, kind: Kind, vis: &str, name: &str, krate: &str) -> String {
     let an = Analysis::new(g);
     let e = Emitter { g, sig, an: &an };
     let mut params: Vec<String> = Vec::new();
@@ -130,7 +132,7 @@ pub fn function(g: &Graph, sig: &Signature, kind: Kind, vis: &str, name: &str) -
     let mut s = String::new();
     writeln!(
         s,
-        "#[doc = {doc:?}]\n#[inline(always)]\n#[allow(unused_variables, unused_mut, clippy::all)]\n{vis} fn {name}<R: ::raads::Real>({}){ret} {{",
+        "#[doc = {doc:?}]\n#[inline(always)]\n#[allow(unused_variables, unused_mut, clippy::all)]\n{vis} fn {name}<R: {krate}::Real>({}){ret} {{",
         params.join(", ")
     )
     .unwrap();
@@ -359,5 +361,22 @@ impl Adj<'_> {
         } else {
             writeln!(s, "    a{j} += {e};").unwrap();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn crate_path() {
+        let mut g = Graph::default();
+        let x = g.push(Op::Input(0), NONE, NONE, NONE, NONE);
+        let y = g.push(Op::Exp, x, NONE, NONE, NONE);
+        g.outs.push(y);
+        let sig = Signature { groups: vec![Group { name: "x".into(), len: None, data: false }], out: None };
+        let src = function(&g, &sig, Kind::Eval, "pub", "f", "::aad");
+        assert!(src.contains("pub fn f<R: ::aad::Real>(x: R) -> R {"), "{src}");
+        assert!(!src.contains("raads"), "{src}");
     }
 }

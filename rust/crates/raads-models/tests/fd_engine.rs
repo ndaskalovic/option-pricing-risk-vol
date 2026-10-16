@@ -169,3 +169,24 @@ fn fd_zero_steps() {
 fn fd_two_nodes() {
     let _ = fd_price::<BsEuroCall, f64>(&[100.0, 0.01, 0.2, 1.0, 100.0], &FdGrid::new(3.0, 6.0, 2, 10));
 }
+
+#[test]
+#[should_panic(expected = "need finite x_lo < x_hi")]
+fn fd_empty_range() {
+    let _ = fd_price::<BsEuroCall, f64>(&[100.0, 0.01, 0.2, 1.0, 100.0], &FdGrid::new(6.0, 3.0, 51, 10));
+}
+
+#[test]
+#[should_panic(expected = "need theta in [0, 1]")]
+fn fd_theta_out_of_range() {
+    let _ = fd_price::<BsEuroCall, f64>(&[100.0, 0.01, 0.2, 1.0, 100.0], &FdGrid::new(3.0, 6.0, 51, 10).with_theta(1.5));
+}
+
+/// Fully implicit vs Crank–Nicolson: first order in dt, so close but not equal.
+#[test]
+fn fd_with_theta() {
+    let p = [100.0, 0.01, 0.2, 1.0, 100.0];
+    let g = FdGrid::new(100f64.ln() - 1.5, 100f64.ln() + 1.5, 201, 400);
+    let (cn, imp) = (fd_price::<BsEuroCall, f64>(&p, &g), fd_price::<BsEuroCall, f64>(&p, &g.with_theta(1.0)));
+    assert!(cn != imp && (cn - imp).abs() < 1e-2, "{cn} vs {imp}");
+}

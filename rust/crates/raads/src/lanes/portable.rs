@@ -1,8 +1,8 @@
 //! Portable packs: `F32<W>` = `[f32; W]`, `F64<W>` = `[f64; W]`, built on the std float methods.
 //!
 //! The fallback for targets without a SIMD backend (and x86_64 without AVX2 + FMA); LLVM
-//! auto-vectorises the element loops where it can. `mul_add` is a fused multiply-add, which is a
-//! libm call when the target has no FMA instruction.
+//! auto-vectorises the element loops where it can. `mul_add` is fused only where the target has
+//! an FMA instruction.
 
 use std::fmt;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
@@ -14,7 +14,7 @@ macro_rules! pack {
     ($(#[$doc:meta])* $T:ident, $e:ident) => {
         $(#[$doc])*
         #[derive(Clone, Copy, PartialEq)]
-        pub struct $T<const W: usize>(pub [$e; W]);
+        pub struct $T<const W: usize>([$e; W]);
 
         impl<const W: usize> $T<W> {
             #[inline(always)]
@@ -170,11 +170,11 @@ macro_rules! pack {
             }
             #[inline(always)]
             fn mul_add(self, b: Self, c: Self) -> Self {
-                Self(std::array::from_fn(|i| self.0[i].mul_add(b.0[i], c.0[i])))
+                Self(std::array::from_fn(|i| mul_add!(self.0[i], b.0[i], c.0[i])))
             }
             #[inline(always)]
             fn nmul_add(self, b: Self, c: Self) -> Self {
-                Self(std::array::from_fn(|i| (-self.0[i]).mul_add(b.0[i], c.0[i])))
+                Self(std::array::from_fn(|i| mul_add!(-self.0[i], b.0[i], c.0[i])))
             }
             #[inline(always)]
             fn neg_zero() -> Self {

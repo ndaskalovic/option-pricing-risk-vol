@@ -24,8 +24,8 @@ use std::marker::PhantomData;
 
 /// A model compiled by [`#[fd_model]`](crate::fd_model). `P` holds the parameters.
 ///
-/// Generated `*_eval` functions compute a kernel; `*_vjp` add the adjoints of its inputs
-/// (seeded with `a_y`) into `a_p` and return the adjoint of the data input `x` (if any).
+/// Implement it with `#[fd_model]`, not by hand: the methods are generated (hidden from these
+/// docs) and may change between minor versions.
 pub trait FdModel {
     /// Parameters.
     type P<T: Copy>: Arr<T>;
@@ -36,21 +36,31 @@ pub trait FdModel {
     /// second-order Greeks need `EXERCISE_EPS > 0`; first order does not.
     const EXERCISE_EPS: f64 = 0.0;
 
+    // Generated. `*_eval` compute a kernel; `*_vjp` add the adjoints of its inputs (seeded with
+    // `a_y`) into `a_p` and return the adjoint of the data input `x` (if any).
     /// `coeffs` kernel: `[a, b, c]` at log-spot `x`.
+    #[doc(hidden)]
     fn coeffs_eval<R: Real>(x: R, p: &Self::P<R>) -> [R; 3];
     /// `coeffs` reverse.
+    #[doc(hidden)]
     fn coeffs_vjp<R: Real>(x: R, p: &Self::P<R>, a_y: &[R; 3], a_p: &mut Self::P<R>) -> [R; 3];
     /// `payoff` kernel.
+    #[doc(hidden)]
     fn payoff_eval<R: Real>(x: R, p: &Self::P<R>) -> R;
     /// `payoff` reverse.
+    #[doc(hidden)]
     fn payoff_vjp<R: Real>(x: R, p: &Self::P<R>, a_y: R, a_p: &mut Self::P<R>) -> R;
     /// `spot` kernel (log-spot).
+    #[doc(hidden)]
     fn spot_eval<R: Real>(p: &Self::P<R>) -> R;
     /// `spot` reverse.
+    #[doc(hidden)]
     fn spot_vjp<R: Real>(p: &Self::P<R>, a_y: R, a_p: &mut Self::P<R>) -> R;
     /// `maturity` kernel.
+    #[doc(hidden)]
     fn maturity_eval<R: Real>(p: &Self::P<R>) -> R;
     /// `maturity` reverse.
+    #[doc(hidden)]
     fn maturity_vjp<R: Real>(p: &Self::P<R>, a_y: R, a_p: &mut Self::P<R>) -> R;
 }
 
@@ -75,6 +85,11 @@ impl FdGrid {
     /// Crank–Nicolson grid.
     pub fn new(x_lo: f64, x_hi: f64, nx: usize, nt: usize) -> Self {
         FdGrid { x_lo, x_hi, nx, nt, theta: 0.5 }
+    }
+
+    /// The same grid with implicitness `theta` (0 explicit, 0.5 Crank–Nicolson, 1 fully implicit).
+    pub fn with_theta(self, theta: f64) -> Self {
+        FdGrid { theta, ..self }
     }
 }
 
@@ -156,6 +171,7 @@ pub(crate) struct Scheme<M, R> {
 impl<M: FdModel, R: Real> Scheme<M, R> {
     pub fn new(p: &M::P<R>, x_lo: f64, x_hi: f64, nx: usize, grads: bool) -> Self {
         assert!(nx >= 3, "need at least 3 grid nodes");
+        assert!(x_lo.is_finite() && x_hi.is_finite() && x_hi > x_lo, "need finite x_lo < x_hi, got [{x_lo}, {x_hi}]");
         let h = (x_hi - x_lo) / (nx - 1) as f64;
         let zero = R::from(0.0);
         let buf = || vec![zero; nx];
@@ -354,6 +370,7 @@ impl<M: FdModel, R: Real> Scheme<M, R> {
 fn fd_core<M: FdModel, R: Real, const GRADS: bool>(p: &M::P<R>, g: &FdGrid) -> FdResult<R, M::P<R>> {
     let (x_lo, nx, nt) = (g.x_lo, g.nx, g.nt);
     assert!(nt >= 1, "need at least 1 time step");
+    assert!((0.0..=1.0).contains(&g.theta), "need theta in [0, 1], got {}", g.theta);
     let x0 = M::spot_eval(p);
     let dt = M::maturity_eval(p) / nt as f64;
     let mut sc = Scheme::<M, R>::new(p, x_lo, g.x_hi, nx, GRADS);
@@ -410,18 +427,18 @@ fn fd_core<M: FdModel, R: Real, const GRADS: bool>(p: &M::P<R>, g: &FdGrid) -> F
 /// With [`Dual`](crate::Dual) parameters seeded with a direction v, the tangents are
 /// grad · v and H v.
 ///
+/// The price is the quadratic through the three nodes nearest the model's spot, clamped to
+/// the grid: a spot outside `[x_lo, x_hi]` is extrapolated, not rejected, so keep it well inside.
+///
 /// # Panics
 ///
-/// If `grid.nx < 3` or `grid.nt == 0`.
+/// If `grid.nx < 3`, `grid.nt == 0`, `x_lo`/`x_hi` are not finite with `x_lo < x_hi`, or
+/// `theta` is outside `[0, 1]`.
 pub fn fd_greeks<M: FdModel, R: Real>(params: &M::P<R>, grid: &FdGrid) -> FdResult<R, M::P<R>> {
     fd_core::<M, R, true>(params, grid)
 }
 
-/// Price only: no history stored, no reverse sweep.
-///
-/// # Panics
-///
-/// If `grid.nx < 3` or `grid.nt == 0`.
+/// Price only: no history stored, no reverse sweep. Interpolation and panics as [`fd_greeks`].
 #[must_use]
 pub fn fd_price<M: FdModel, R: Real>(params: &M::P<R>, grid: &FdGrid) -> R {
     fd_core::<M, R, false>(params, grid).price

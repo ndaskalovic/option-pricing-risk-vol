@@ -1,11 +1,15 @@
 //! Attribute macros for `raads`: `#[kernel]` turns a function written against `N: AdNum`
 //! into straight-line forward and reverse code. Re-exported by `raads`; see its docs.
+//!
+//! Generated code names `raads` by the path the calling crate gives it, so a renamed
+//! dependency (`aad = { package = "raads", .. }`) works.
 
 #![warn(missing_docs)]
 
 use proc_macro::TokenStream;
+use proc_macro_crate::FoundCrate;
 use proc_macro2::{Span, TokenStream as Tokens};
-use quote::quote;
+use quote::{format_ident, quote};
 use raads_codegen::emit::{self, Kind};
 use raads_codegen::{Group, Signature};
 use syn::spanned::Spanned;
@@ -59,8 +63,13 @@ pub fn fd_model(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// powf relu detach maximum minimum smooth_relu`, `N::select_gt(a, b, x, y)`, `N::from(k)`,
 /// integer literal indices and `f64` constants: literals, paths (`Self::EPS`,
 /// `std::f64::consts::PI`) and SCREAMING_CASE names; any other bare name must be a parameter
-/// or a local. Parameter names `y`, `res`, `a_*`, and `v` or `a` followed by digits are
-/// reserved by the generated code.
+/// or a local. Integer literals are `f64`s (`x * 2`), and plain `f64`s are accepted where
+/// an `N` is expected (`x.maximum(0.0)`). Parameter names `y`, `res`, `a_*`, and `v` or `a`
+/// followed by digits are reserved by the generated code, as is the generic parameter name
+/// `R` on a model `impl`.
+///
+/// The generated code refers to `raads` by the name the calling crate's `Cargo.toml` gives
+/// it, so a renamed dependency (`aad = { package = "raads", .. }`) works.
 #[proc_macro_attribute]
 pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !attr.is_empty() {
@@ -85,8 +94,22 @@ pub(crate) struct Compiled {
     pub graph: Tokens,
 }
 
+/// Path of the `raads` crate as the calling crate names it. Inside `raads` itself
+/// (`FoundCrate::Itself`, also reported for its doctests) `::raads` still resolves: the crate
+/// declares `extern crate self as raads`.
+pub(crate) fn krate() -> Tokens {
+    match proc_macro_crate::crate_name("raads") {
+        Ok(FoundCrate::Name(name)) => {
+            let id = format_ident!("{name}");
+            quote!(::#id)
+        }
+        _ => quote!(::raads),
+    }
+}
+
 fn kernel_fn(f: ItemFn) -> Result<Tokens> {
-    let c = compile(f, "pub", ["eval", "vjp", "fwd", "bwd"])?;
+    let krate = krate();
+    let c = compile(f, "pub", ["eval", "vjp", "fwd", "bwd"], &krate)?;
     let Compiled { source, eval, vjp, fwd, bwd, nres, graph, .. } = c;
     let vis = &source.vis;
     let name = &source.sig.ident;
@@ -106,7 +129,7 @@ fn kernel_fn(f: ItemFn) -> Result<Tokens> {
             #bwd
             /// The kernel graph (for tests against the tracer).
             #[doc(hidden)]
-            pub fn graph() -> ::raads::__private::codegen::Graph { #graph }
+            pub fn graph() -> #krate::__private::codegen::Graph { #graph }
         }
     })
 }
@@ -126,8 +149,9 @@ fn shape(ty: &Type, n: &syn::Ident) -> Result<Shape> {
     }
 }
 
-/// Parse, build the graph and emit. `names` are the generated eval/vjp/fwd/bwd names.
-pub(crate) fn compile(mut f: ItemFn, vis: &str, names: [&str; 4]) -> Result<Compiled> {
+/// Parse, build the graph and emit. `names` are the generated eval/vjp/fwd/bwd names;
+/// `krate` is the path of `raads`.
+pub(crate) fn compile(mut f: ItemFn, vis: &str, names: [&str; 4], krate: &Tokens) -> Result<Compiled> {
     let tys: Vec<_> = f.sig.generics.type_params().collect();
     if tys.len() != 1 {
         return Err(Error::new(f.sig.generics.span(), "a kernel has exactly one type parameter, e.g. `<N: AdNum>`"));
@@ -156,7 +180,7 @@ pub(crate) fn compile(mut f: ItemFn, vis: &str, names: [&str; 4]) -> Result<Comp
         ReturnType::Type(_, t) => (shape(t, &n)?, t.span()),
         ReturnType::Default => return Err(Error::new(f.sig.span(), "a kernel returns `N` or `[N; LEN]`")),
     };
-    let mut b = Builder::new(&params);
+    let mut b = Builder::new(&params, &n, krate);
     let (val, body) = b.block(&f.block)?;
     b.outputs(&val, ret, f.block.span())?;
     let sig = Signature {
@@ -177,7 +201,7 @@ pub(crate) fn compile(mut f: ItemFn, vis: &str, names: [&str; 4]) -> Result<Comp
         },
     };
     let emit_fn = |kind, name: &str| -> Result<Tokens> {
-        emit::function(&b.g, &sig, kind, vis, name)
+        emit::function(&b.g, &sig, kind, vis, name, &krate.to_string())
             .parse()
             .map_err(|e| Error::new(f.sig.span(), format!("internal error: generated code does not parse: {e}")))
     };

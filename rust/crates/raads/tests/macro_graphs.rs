@@ -37,6 +37,15 @@ fn constants<N: AdNum>(x: [N; 2], #[data] d: N) -> [N; 4] {
     [K - x[0], 2.0 / x[1], x[0] / K, s + std::f64::consts::PI * d]
 }
 
+/// Integer literals as numbers, and plain `f64` arguments where an `N` is expected: the
+/// rewritten function makes them `f64` and `N::from(k)` constants, in the tracer's order.
+#[kernel]
+fn plain_numbers<N: AdNum>(x: [N; 2], #[data] d: N) -> [N; 5] {
+    let k = 2;
+    let s = N::select_gt(x[0] * 3, K, (x[1] - 1).exp(), 0);
+    [x[0] * 2 + 1, 4 / x[1] - x[0].powf(2), N::from(3) * k - x[1].maximum(K) + x[0].minimum(0.5), s, d.maximum(1) * x[0]]
+}
+
 /// Data and differentiable parameters interleaved: inputs are numbered over the
 /// differentiable groups, data over the data groups.
 #[kernel]
@@ -87,6 +96,23 @@ fn constants_match() {
         assert!((0..4).all(|k| close(yc[k], y[k])));
     }
     assert_eq!(constants::graph(), trace(|x, d: [Tracer; 1]| constants(x, d[0])));
+}
+
+#[test]
+fn plain_numbers_match() {
+    for (x, d) in [([0.3, 0.7], 0.2f64), ([0.6, 1.9], 1.4)] {
+        let x: [f64; 2] = x;
+        let want = [
+            2.0 * x[0] + 1.0,
+            4.0 / x[1] - x[0] * x[0],
+            6.0 - x[1].max(K) + x[0].min(0.5),
+            if 3.0 * x[0] > K { (x[1] - 1.0).exp() } else { 0.0 },
+            d.max(1.0) * x[0],
+        ];
+        let (y, yc) = (plain_numbers(x, d), plain_numbers::eval(&x, d));
+        assert!((0..5).all(|k| close(y[k], want[k]) && close(yc[k], want[k])), "{y:?} {yc:?} {want:?}");
+    }
+    assert_eq!(plain_numbers::graph(), trace(|x, d: [Tracer; 1]| plain_numbers(x, d[0])));
 }
 
 #[test]

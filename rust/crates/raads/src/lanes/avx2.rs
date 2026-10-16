@@ -341,7 +341,7 @@ macro_rules! x86_pack {
     ($(#[$doc:meta])* $T:ident, $e:ident, $n:literal, $m:ident) => {
         $(#[$doc])*
         #[derive(Clone, Copy)]
-        pub struct $T<const R: usize>(pub [$m::V; R]);
+        pub struct $T<const R: usize>([$m::V; R]);
 
         impl<const R: usize> $T<R> {
             #[inline(always)]

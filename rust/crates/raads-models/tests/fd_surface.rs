@@ -76,10 +76,10 @@ fn tangent_vs_bump<const AM: bool>(c: &mut Checks, g: &SurfaceGrid, rel: f64) {
     for m in 0..T.len() {
         for k in strikes() {
             let o = sa.option(m, F64x2::from(S0), F64x2::from(k));
-            let pr: Vec<f64> = bumped.iter().map(|b| b.option(m, S0, k)[0]).collect();
+            let pr: Vec<f64> = bumped.iter().map(|b| b.option(m, S0, k).price).collect();
             let (vb, rb) = ((pr[0] - pr[1]) / (2.0 * eps), (pr[2] - pr[3]) / (2.0 * eps));
-            ev = ev.max((o[0].t.lane(0) - vb).abs());
-            er = er.max((o[0].t.lane(1) - rb).abs());
+            ev = ev.max((o.price.t.lane(0) - vb).abs());
+            er = er.max((o.price.t.lane(1) - rb).abs());
             vscale = vscale.max(vb.abs());
             rscale = rscale.max(rb.abs());
         }
@@ -103,7 +103,8 @@ fn fd_surface_engine() {
         for &k in &ks {
             let o = se.option(m, F64x2::from(S0), F64x2::from(k));
             let b = bs_put(k, t);
-            let got = [o[0].v.lane(0), o[1].v.lane(0), o[2].v.lane(0), o[3].v.lane(0), o[4].v.lane(0), o[0].t.lane(0), o[0].t.lane(1)];
+            let v = |x: D2| x.v.lane(0);
+            let got = [v(o.price), v(o.delta), v(o.gamma), v(o.theta), v(o.dvdk), o.price.t.lane(0), o.price.t.lane(1)];
             for i in 0..7 {
                 emax[i] = emax[i].max((got[i] - b[i]).abs());
             }
@@ -163,7 +164,7 @@ fn fd_surface_engine() {
             let z = 5.0 * SIG * t.sqrt();
             let g = FdGrid::new(S0.ln() - 0.5 - z, S0.ln() + 0.5 + z, 801, 800);
             let single = fd_price::<BsAmericanPut, f64>(&[S0, R_, SIG, t, k], &g);
-            e4 = e4.max((s0.option(m, S0, k)[0] - single).abs());
+            e4 = e4.max((s0.option(m, S0, k).price - single).abs());
         }
     }
     c.le("price vs single-option engine (abs, S=100)", e4, 2e-3);
@@ -239,4 +240,10 @@ fn surface_no_maturities() {
 fn book_maturity_out_of_range() {
     let pts = [SurfacePoint { maturity: 1, x: 0.0, weight: 1.0 }];
     let _ = fd_surface_book::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &grid(0.01, 0.01), &[0.5], &pts);
+}
+
+#[test]
+#[should_panic(expected = "need a finite time step dt > 0")]
+fn surface_zero_dt() {
+    let _ = fd_surface::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &grid(0.01, 0.0), &[0.5]);
 }

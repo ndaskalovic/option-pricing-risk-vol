@@ -25,12 +25,16 @@ fn check<L: Lanes>(name: &str) {
         exact(lane(x.relu(), i), a.max(0.0), "relu");
         exact(lane(y.sqrt(), i), b.sqrt(), "sqrt");
         exact(lane(L::select_gt(x, y, x, y), i), if a > b { a } else { b }, "select_gt");
-        exact(lane(x.mul_add(y, x), i), if f32_ { (a as f32).mul_add(b as f32, a as f32) as f64 } else { a.mul_add(b, a) }, "mul_add");
-        exact(
-            lane(x.nmul_add(y, x), i),
-            if f32_ { (-(a as f32)).mul_add(b as f32, a as f32) as f64 } else { (-a).mul_add(b, a) },
-            "nmul_add",
-        );
+        // rounded once where the backend fuses (SIMD backends always; see `mul_add!`)
+        let fused = cfg!(any(target_arch = "aarch64", target_feature = "fma"));
+        let fma = |a: f64, b: f64, c: f64| match (f32_, fused) {
+            (true, true) => (a as f32).mul_add(b as f32, c as f32) as f64,
+            (true, false) => (a as f32 * b as f32 + c as f32) as f64,
+            (false, true) => a.mul_add(b, c),
+            (false, false) => a * b + c,
+        };
+        exact(lane(x.mul_add(y, x), i), fma(a, b, a), "mul_add");
+        exact(lane(x.nmul_add(y, x), i), fma(-a, b, a), "nmul_add");
         let tol = if f32_ { 3e-7 } else { 1e-15 };
         let rel = |got: f64, want: f64, op: &str| {
             assert!(((got - want) / want).abs() <= tol, "{name} {op} lane {i}: {got} vs {want}");

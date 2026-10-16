@@ -88,6 +88,22 @@ pub struct SurfacePoint<L> {
     pub weight: L,
 }
 
+/// One option read off a unit-strike surface by [`FdSurface::option`]: price and grid Greeks.
+#[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+pub struct SurfaceOption<R> {
+    /// Price.
+    pub price: R,
+    /// dV/dS.
+    pub delta: R,
+    /// d²V/dS².
+    pub gamma: R,
+    /// dV/dt in calendar time (= -dV/dT).
+    pub theta: R,
+    /// dV/dK.
+    pub dvdk: R,
+}
+
 /// `u(x, T_m)` and `u_τ(x, T_m)` on the grid for every maturity `m`.
 #[derive(Clone, Debug)]
 #[must_use]
@@ -147,20 +163,22 @@ impl<R: Real> FdSurface<R> {
         ]
     }
 
-    /// u, u_x, u_xx at maturity index `m`, per-lane coordinate `x`. Panics if `m` is out of range.
+    /// u, u_x, u_xx at maturity index `m`, per-lane coordinate `x`. Reads use the nodes nearest
+    /// `x` at least two from either end, so an `x` near or outside the grid edge is extrapolated.
+    /// Panics if `m` is out of range.
     pub fn read(&self, m: usize, x: R::Lanes) -> [R; 3] {
         self.read_buf(&self.slices, m, x)
     }
 
-    /// Unit-strike model on x = log(S/K): price, delta, gamma, theta (dV/dt, calendar time),
-    /// dV/dK. Theta comes from the PDE (`u_τ = L u` on continuation nodes): no dt error.
+    /// Unit-strike model on x = log(S/K): price and grid Greeks at maturity index `m`. Theta
+    /// comes from the PDE (`u_τ = L u` on continuation nodes): no dt error. Reads as [`read`](Self::read).
     /// Panics if `m` is out of range.
-    pub fn option(&self, m: usize, spot: R::Lanes, strike: R::Lanes) -> [R; 5] {
+    pub fn option(&self, m: usize, spot: R::Lanes, strike: R::Lanes) -> SurfaceOption<R> {
         let x = (spot / strike).ln();
         let r = self.read_buf(&self.slices, m, x);
         let rt = self.read_buf(&self.taus, m, x);
         let (k, s) = (R::lift(strike), R::lift(spot));
-        [k * r[0], k * r[1] / s, k * (r[2] - r[1]) / (s * s), -(k * rt[0]), r[0] - r[1]]
+        SurfaceOption { price: k * r[0], delta: k * r[1] / s, gamma: k * (r[2] - r[1]) / (s * s), theta: -(k * rt[0]), dvdk: r[0] - r[1] }
     }
 }
 
@@ -175,6 +193,7 @@ fn surface_core<M: FdModel, R: Real, const GRADS: bool>(
 ) -> FdSurface<R> {
     let nx = g.nx;
     assert!(nx >= 5, "need at least 5 grid nodes");
+    assert!(g.dt.is_finite() && g.dt > 0.0, "need a finite time step dt > 0, got {}", g.dt);
     assert!(!maturities.is_empty(), "need at least 1 maturity");
     assert!(points.iter().all(|pt| pt.maturity < maturities.len()), "SurfacePoint::maturity out of range");
     let mut sc = Scheme::<M, R>::new(p, g.x_lo, g.x_hi, nx, GRADS);
@@ -252,7 +271,8 @@ fn surface_core<M: FdModel, R: Real, const GRADS: bool>(
 ///
 /// # Panics
 ///
-/// If `grid.nx < 5`, `maturities` is empty or not positive and strictly increasing.
+/// If `grid.nx < 5`, `grid.dt` is not finite and positive, `x_lo`/`x_hi` are not finite with
+/// `x_lo < x_hi`, or `maturities` is empty or not positive and strictly increasing.
 pub fn fd_surface<M: FdModel, R: Real>(params: &M::P<R>, grid: &SurfaceGrid, maturities: &[f64]) -> FdSurface<R> {
     let mut a: M::P<R> = Arr::splat(R::from(0.0));
     surface_core::<M, R, false>(params, grid, maturities, &[], &mut a)

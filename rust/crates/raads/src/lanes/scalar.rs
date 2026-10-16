@@ -60,11 +60,11 @@ impl Real for f64 {
     }
     #[inline(always)]
     fn mul_add(self, b: f64, c: f64) -> f64 {
-        f64::mul_add(self, b, c)
+        mul_add!(self, b, c)
     }
     #[inline(always)]
     fn nmul_add(self, b: f64, c: f64) -> f64 {
-        f64::mul_add(-self, b, c)
+        mul_add!(-self, b, c)
     }
     #[inline(always)]
     fn neg_zero() -> f64 {

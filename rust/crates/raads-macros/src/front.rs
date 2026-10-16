@@ -7,9 +7,10 @@
 //! symbolic and are evaluated by the compiler in the generated code.
 //!
 //! It also returns the function body rewritten so it compiles for any `N: AdNum`
-//! (`2.0 * x` becomes `x.rmul(2.0)`), which is the eager / tracer version of the kernel.
+//! (`2 * x` becomes `x.rmul(2f64)`, `x.maximum(0.0)` becomes `x.maximum(N::from(0.0))`),
+//! which is the eager / tracer version of the kernel.
 
-use proc_macro2::{Span, TokenStream};
+use proc_macro2::{Ident, Literal, Span, TokenStream};
 use quote::{ToTokens, quote, quote_spanned};
 use raads_codegen::{Graph, NONE, Op, f64_literal};
 use std::collections::HashMap;
@@ -68,6 +69,9 @@ pub struct Builder {
     /// Rust source of each constant node's value (as an `f64` expression).
     pub consts: Vec<Option<F>>,
     env: HashMap<String, Val>,
+    /// The kernel's number type parameter and the path of `raads`.
+    n: Ident,
+    krate: TokenStream,
 }
 
 fn err<T>(span: Span, msg: &str) -> Result<T> {
@@ -76,8 +80,8 @@ fn err<T>(span: Span, msg: &str) -> Result<T> {
 
 impl Builder {
     /// Records input nodes (non-data params in order), then data nodes.
-    pub fn new(params: &[Param]) -> Self {
-        let mut b = Builder { g: Graph::default(), consts: Vec::new(), env: HashMap::new() };
+    pub fn new(params: &[Param], n: &Ident, krate: &TokenStream) -> Self {
+        let mut b = Builder { g: Graph::default(), consts: Vec::new(), env: HashMap::new(), n: n.clone(), krate: krate.clone() };
         for data in [false, true] {
             let mut k = 0;
             for p in params.iter().filter(|p| p.data == data) {
@@ -112,6 +116,16 @@ impl Builder {
             Val::Node(i) => Ok(*i),
             Val::F(f) => Ok(self.konst(f)),
             Val::Arr(_) => err(span, "expected a number, found an array"),
+        }
+    }
+
+    /// Rewritten source `t` of `v` where an `N` is expected: plain `f64`s become `N::from(t)`
+    /// (which the tracer records as the constant node `node` makes).
+    fn as_n(&self, v: &Val, t: TokenStream) -> TokenStream {
+        let n = &self.n;
+        match v {
+            Val::F(_) => quote!(<#n as ::core::convert::From<f64>>::from(#t)),
+            _ => t,
         }
     }
 
@@ -178,7 +192,19 @@ impl Builder {
     fn expr(&mut self, e: &Expr) -> Result<(Val, TokenStream)> {
         let sp = e.span();
         match e {
-            Expr::Lit(l) => Ok((Val::F(F::Num(lit_f64(&l.lit)?)), e.to_token_stream())),
+            Expr::Lit(l) => {
+                let k = lit_f64(&l.lit)?;
+                // kernel numbers are f64: `2` is written as `2f64` in the rewritten body
+                let t = match &l.lit {
+                    Lit::Int(i) => {
+                        let mut f = Literal::f64_suffixed(k);
+                        f.set_span(i.span());
+                        f.into_token_stream()
+                    }
+                    _ => e.to_token_stream(),
+                };
+                Ok((Val::F(F::Num(k)), t))
+            }
             Expr::Paren(p) => {
                 let (v, t) = self.expr(&p.expr)?;
                 Ok((v, quote!((#t))))
@@ -283,7 +309,8 @@ impl Builder {
                 let x = self.node(&r, b.right.span())?;
                 let c = self.konst(&k);
                 let v = self.binary(op, c, x);
-                Ok((v, quote!(::raads::AdNum::#rmeth(#rt, #lt))))
+                let krate = &self.krate;
+                Ok((v, quote!(#krate::AdNum::#rmeth(#rt, #lt))))
             }
             (l, Val::F(k)) => {
                 let x = self.node(&l, b.left.span())?;
@@ -320,10 +347,11 @@ impl Builder {
             ats.push(t);
         }
         let meth = &m.method;
-        let src = quote!(#rt.#meth(#(#ats),*));
-        if let Val::F(f) = &recv
-            && args.iter().all(|a| matches!(a, Val::F(_)))
-        {
+        if let Val::F(f) = &recv {
+            if args.iter().any(|a| !matches!(a, Val::F(_))) {
+                let n = &self.n;
+                return err(m.receiver.span(), &format!("`{name}` on a plain f64: write `{n}::from(k).{name}(..)`"));
+            }
             // plain f64 arithmetic, evaluated by the compiler; literal arguments keep their
             // type (`powi(2)` takes an `i32`)
             let ft = f.tokens();
@@ -332,8 +360,11 @@ impl Builder {
                 Val::F(x) => x.tokens(),
                 _ => unreachable!(),
             });
+            let sa = ats.iter().zip(&m.args).map(|(t, a)| if is_literal(a) { a.to_token_stream() } else { t.clone() });
+            let src = quote!(#rt.#meth(#(#sa),*));
             return Ok((Val::F(F::Expr(quote!(#ft.#meth(#(#fa),*)))), src));
         }
+        let mut src = quote!(#rt.#meth(#(#ats),*));
         let x = self.node(&recv, m.receiver.span())?;
         let fk = |i: usize| -> Result<F> {
             match args.get(i) {
@@ -373,6 +404,8 @@ impl Builder {
             "maximum" | "minimum" => {
                 arity(1)?;
                 let y = self.node(&args[0], sp)?;
+                let b = self.as_n(&args[0], ats[0].clone());
+                src = quote!(#rt.#meth(#b));
                 let (p, q) = if name == "maximum" { (x, y) } else { (y, x) };
                 Val::Node(self.push(Op::SelGt, x, y, p, q))
             }
@@ -413,6 +446,19 @@ impl Builder {
         let sp = c.span();
         let Expr::Path(p) = &*c.func else { return err(sp, "unsupported call in a kernel") };
         let last = p.path.segments.last().map(|s| s.ident.to_string()).unwrap_or_default();
+        let f = &c.func;
+        if last == "select_gt" && c.args.len() == 4 {
+            // a plain f64 argument becomes its constant node right after it is evaluated, as
+            // `N::from(k)` does in the rewritten source
+            let mut ids = Vec::new();
+            let mut ats = Vec::new();
+            for a in &c.args {
+                let (v, t) = self.expr(a)?;
+                ids.push(self.node(&v, a.span())?);
+                ats.push(self.as_n(&v, t));
+            }
+            return Ok((Val::Node(self.push(Op::SelGt, ids[0], ids[1], ids[2], ids[3])), quote!(#f(#(#ats),*))));
+        }
         let mut args = Vec::new();
         let mut ats = Vec::new();
         for a in &c.args {
@@ -420,13 +466,8 @@ impl Builder {
             args.push(v);
             ats.push(t);
         }
-        let f = &c.func;
         let src = quote!(#f(#(#ats),*));
         match (last.as_str(), args.len()) {
-            ("select_gt", 4) => {
-                let ids = args.iter().zip(&c.args).map(|(v, a)| self.node(v, a.span())).collect::<Result<Vec<_>>>()?;
-                Ok((Val::Node(self.push(Op::SelGt, ids[0], ids[1], ids[2], ids[3])), src))
-            }
             ("from", 1) => match &args[0] {
                 Val::F(k) => {
                     let k = k.clone();
@@ -452,12 +493,13 @@ impl Builder {
     /// Code that rebuilds the graph at run time (constants evaluated by the compiler),
     /// for comparison with the tracer.
     pub fn graph_code(&self) -> TokenStream {
+        let krate = &self.krate;
         let nodes = self.g.nodes.iter().enumerate().map(|(i, n)| {
-            let arg = |x: usize| if x == NONE { quote!(::raads::__private::codegen::NONE) } else { quote!(#x) };
+            let arg = |x: usize| if x == NONE { quote!(#krate::__private::codegen::NONE) } else { quote!(#x) };
             let (a, b, c, d) = (arg(n.a), arg(n.b), arg(n.c), arg(n.d));
             let lit = |f: &F| {
                 let t = f.tokens();
-                quote!(::raads::__private::codegen::f64_literal(#t))
+                quote!(#krate::__private::codegen::f64_literal(#t))
             };
             let op = match &n.op {
                 Op::Input(k) => quote!(Input(#k)),
@@ -468,7 +510,7 @@ impl Builder {
                 }
                 Op::Powk(s) => {
                     let t: TokenStream = s.parse().unwrap();
-                    let l = quote!(::raads::__private::codegen::f64_literal(#t));
+                    let l = quote!(#krate::__private::codegen::f64_literal(#t));
                     quote!(Powk(#l))
                 }
                 Op::Add => quote!(Add),
@@ -483,11 +525,11 @@ impl Builder {
                 Op::SelGt => quote!(SelGt),
                 Op::Stop => quote!(Stop),
             };
-            quote!(g.push(::raads::__private::codegen::Op::#op, #a, #b, #c, #d);)
+            quote!(g.push(#krate::__private::codegen::Op::#op, #a, #b, #c, #d);)
         });
         let outs = &self.g.outs;
         quote! {
-            let mut g = ::raads::__private::codegen::Graph::default();
+            let mut g = #krate::__private::codegen::Graph::default();
             #(#nodes)*
             g.outs = vec![#(#outs),*];
             g
