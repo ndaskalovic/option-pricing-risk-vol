@@ -27,6 +27,11 @@ use front::{Builder, Param, Shape};
 /// against its specification (names, shapes, `#[data]`) and assembles the trait impl.
 /// Consts the engine declares are forwarded from the block, so kernels can read them as
 /// `Self::NAME` without the trait in scope. The generic parameter name `R` is reserved.
+///
+/// An engine provides `__raads_model!` as a `macro_rules!` that forwards its input to
+/// `raads::__private::check_kernels!` with its spec (`fn` signatures over `N` with named
+/// array lengths, and consts) and a callback that assembles the impl; see the `paths` and
+/// `pde1d` modules of `raads-engines`.
 #[proc_macro_attribute]
 pub fn kernels(attr: TokenStream, item: TokenStream) -> TokenStream {
     let engine = match syn::parse::<syn::Path>(attr) {

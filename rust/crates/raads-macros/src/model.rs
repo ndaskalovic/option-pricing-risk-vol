@@ -3,7 +3,7 @@
 //! 1. `#[kernels(path)]` compiles every function of an inherent `impl` block like `#[kernel]`
 //!    (the generated functions are named `<kernel>_eval`, `_vjp`, `_fwd`, `_bwd`) and expands to
 //!    the block plus `path::__raads_model! { [raads] [generics] [Self type] [where predicates]
-//!    [consts] [kernels] }`, where each kernel is `{ (original signature;) NRES [eval] [vjp]
+//!    [const names] [kernels] }`, where each kernel is `{ (original signature;) NRES [eval] [vjp]
 //!    [fwd] [bwd] }` with the user's tokens and spans.
 //! 2. The engine's `__raads_model!` (a `macro_rules!`) forwards that, minus the `raads` path, to
 //!    `raads::__private::check_kernels! { callback; spec { fn ..; const ..; } ... }`.
@@ -222,7 +222,7 @@ impl Parse for Input {
     }
 }
 
-/// A user kernel's parameters (name, shape, `#[data]`, type span) and result (shape, span).
+/// A user kernel's parameters (shape, `#[data]`, type span) and result (shape, span).
 struct Shapes {
     params: Vec<(Shape, bool, Span)>,
     ret: (Shape, Span),
