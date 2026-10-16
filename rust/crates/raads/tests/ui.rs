@@ -1,4 +1,4 @@
-//! Compile errors of the kernel and model macros, and generated code that must compile
+//! Compile errors of `#[kernel]`, and generated code that must compile
 //! cleanly in strict user crates.
 
 #[test]

@@ -137,7 +137,6 @@ dependencies = [
  "raads-codegen",
  "raads-macros",
  "rand",
- "rand_distr",
  "trybuild",
 ]
 

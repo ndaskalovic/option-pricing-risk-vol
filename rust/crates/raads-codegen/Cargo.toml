@@ -7,7 +7,7 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 authors.workspace = true
-keywords.workspace = true
-categories.workspace = true
+keywords = ["autodiff", "aad", "adjoint", "codegen"]
+categories = ["mathematics"]
 
 [dependencies]

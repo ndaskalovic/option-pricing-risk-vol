@@ -60,8 +60,6 @@ pub struct Param {
     pub name: String,
     pub shape: Shape,
     pub data: bool,
-    /// Span of the parameter's type, for error messages.
-    pub span: Span,
 }
 
 pub struct Builder {

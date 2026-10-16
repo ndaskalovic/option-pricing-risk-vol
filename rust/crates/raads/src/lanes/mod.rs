@@ -1,4 +1,4 @@
-//! SIMD packs: W lanes of `f32` or `f64` (lanes = Monte Carlo paths or independent problems).
+//! SIMD packs: W lanes of `f32` or `f64`, one independent evaluation per lane.
 //!
 //! Each instruction set has its own implementation behind [`Lanes`]: NEON on aarch64,
 //! AVX2/AVX-512 on x86_64 when those target features are enabled at compile time (else plain
@@ -59,7 +59,7 @@ pub trait Lanes: Real<Lanes = Self> + Debug + PartialEq {
     const W: usize;
     /// First `W` elements of `src`.
     fn load(src: &[Self::Elem]) -> Self;
-    /// First `W` elements of `src`, converted (normals are stored as `f32` for every precision).
+    /// First `W` elements of `src`, converted (e.g. random draws stored as `f32` for every precision).
     fn load_f32(src: &[f32]) -> Self;
     /// Write the `W` lanes to `dst[..W]`.
     fn store(self, dst: &mut [Self::Elem]);

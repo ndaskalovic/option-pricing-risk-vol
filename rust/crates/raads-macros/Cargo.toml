@@ -1,14 +1,14 @@
 [package]
 name = "raads-macros"
-description = "#[kernel] and model attribute macros for raads"
+description = "#[kernel] and #[kernels] attribute macros for raads"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 authors.workspace = true
-keywords.workspace = true
-categories.workspace = true
+keywords = ["autodiff", "aad", "adjoint", "proc-macro"]
+categories = ["mathematics", "development-tools::procedural-macro-helpers"]
 
 [lib]
 proc-macro = true

@@ -1,74 +1,10 @@
 # raads
 
-Compile-time adjoint algorithmic differentiation for option pricing, in Rust.
+Compile-time adjoint algorithmic differentiation in Rust. You write a branch-free function once, generic over `AdNum`; a macro turns it into straight-line SIMD code for the value, the gradient in one reverse pass, and Hessian-vector products (forward-over-reverse).
 
-You write a model once as a few small functions. A macro differentiates them at compile time into straight-line SIMD code, and the Monte Carlo and finite-difference engines return the price and every Greek in one run.
-
-## Monte Carlo: a European call
-
-```rust
-use raads::prelude::*;
-use rand::{SeedableRng, rngs::StdRng};
-use rand_distr::{Distribution, StandardNormal};
-
-pub struct GbmCall; // params: s0, r, sigma, T, K
-
-#[mc_model]
-impl GbmCall {
-    pub fn setup<N: AdNum>(p: [N; 5], #[data] n_steps: N) -> [N; 2] {
-        let dt = p[3] / n_steps;
-        [(p[1] - 0.5 * p[2] * p[2]) * dt, p[2] * dt.sqrt()]
-    }
-    pub fn init<N: AdNum>(p: [N; 5]) -> [N; 1] {
-        [p[0].ln()]
-    }
-    pub fn step<N: AdNum>(s: [N; 1], c: [N; 2], #[data] z: [N; 1]) -> [N; 1] {
-        [s[0] + c[0] + c[1] * z[0]]
-    }
-    pub fn payoff<N: AdNum>(s: [N; 1], p: [N; 5], _c: [N; 2]) -> N {
-        (s[0].exp() - p[4]).relu() * (-p[1] * p[3]).exp()
-    }
-}
-
-// n_paths * n_steps standard normal draws (f32); n_paths a multiple of the lanes (32)
-let (n_steps, n_paths) = (52, 100_000);
-let normals: Vec<f32> = StandardNormal.sample_iter(StdRng::seed_from_u64(7)).take(n_paths * n_steps).collect();
-
-let params = [100.0, 0.01, 0.2, 1.0, 100.0].map(F32x32::from);
-let r = mc_greeks::<GbmCall, F32x32>(&params, n_steps, n_paths, &normals);
-println!("{} ± {} delta {} vega {}", r.price, r.std_err, r.grad[0], r.grad[2]);
-```
-
-## Finite differences: one American put
-
-```rust
-use raads::prelude::*;
-
-pub struct AmericanPut; // params: s0, r, sigma, T, K
-
-#[fd_model]
-impl AmericanPut {
-    const AMERICAN: bool = true;
-
-    // PDE in x = log S:  V_t = a V_xx + b V_x - c V
-    pub fn coeffs<N: AdNum>(#[data] _x: N, p: [N; 5]) -> [N; 3] {
-        [0.5 * p[2] * p[2], p[1] - 0.5 * p[2] * p[2], p[1]]
-    }
-    pub fn payoff<N: AdNum>(#[data] x: N, p: [N; 5]) -> N {
-        (p[4] - x.exp()).relu()
-    }
-    pub fn spot<N: AdNum>(p: [N; 5]) -> N {
-        p[0].ln()
-    }
-    pub fn maturity<N: AdNum>(p: [N; 5]) -> N {
-        p[3]
-    }
-}
-
-let grid = FdGrid::new(100f64.ln() - 1.5, 100f64.ln() + 1.5, 401, 400);
-let r = fd_greeks::<AmericanPut, f64>(&[100.0, 0.05, 0.2, 1.0, 100.0], &grid);
-println!("{} delta {} vega {}", r.price, r.grad[0], r.grad[2]); // 6.0883 -0.4110 37.4945
-```
+- `raads`: the core (`#[kernel]`, `AdNum`, `Real`, `Dual`, SIMD `Lanes`).
+- `raads-engines`: Monte Carlo path (`paths`) and 1-D PDE (`pde1d`) engines that run a few kernels in their loops and return gradients w.r.t. every model parameter.
+- `raads-finance`: option models (Black-Scholes, SVI, American exercise) and option surfaces on the engines.
 
 ## Any function
 
@@ -93,6 +29,39 @@ let mut h = [Dual::from(0.0); 2]; // second order: Hessian column for x
 f::vjp(&[Dual::new(0.5, 1.0), Dual::from(2.0)], Dual::from(1.0), Dual::from(1.0), &mut h);
 println!("{value} {grad:?} d2f/dx2 {} d2f/dydx {}", h[0].t, h[1].t);
 ```
+
+## An engine: a PDE and its gradient
+
+`#[kernels(engine)]` compiles the kernels an engine asks for. Here `pde1d` solves `u_τ = k u_xx` from `u(x, 0) = exp(-x²)` and reads `u(x0, T)` with its gradient w.r.t. `k`, `x0` and `T`.
+
+```rust
+use raads::prelude::*;
+use raads_engines::pde1d::{self, Grid};
+
+pub struct Heat; // params: k, x0, T
+
+#[kernels(raads_engines::pde1d)]
+impl Heat {
+    // u_τ = a u_xx + b u_x - c u
+    pub fn coeffs<N: AdNum>(#[data] _x: N, p: [N; 3]) -> [N; 3] {
+        [p[0], N::from(0.0), N::from(0.0)]
+    }
+    pub fn initial<N: AdNum>(#[data] x: N, _p: [N; 3]) -> N {
+        (-(x * x)).exp()
+    }
+    pub fn x0<N: AdNum>(p: [N; 3]) -> N {
+        p[1]
+    }
+    pub fn horizon<N: AdNum>(p: [N; 3]) -> N {
+        p[2]
+    }
+}
+
+let r = pde1d::gradient::<Heat, f64>(&[1.0, 0.5, 0.25], &Grid::new(-6.0, 6.0, 401, 400));
+println!("u {} du/dk {} du/dx0 {} du/dT {}", r.value, r.grad[0], r.grad[1], r.grad[2]);
+```
+
+For option prices and Greeks, see `raads-finance` (`crates/raads-finance`, with a quickstart example).
 
 On x86_64, build with `RUSTFLAGS="-C target-cpu=x86-64-v3"` (AVX2 + FMA) or `native`; default builds use the portable fallback (no SIMD `exp`, no FMA), which is much slower.
 

@@ -1,5 +1,6 @@
 //! Attribute macros for `raads`: `#[kernel]` turns a function written against `N: AdNum`
-//! into straight-line forward and reverse code. Re-exported by `raads`; see its docs.
+//! into straight-line forward and reverse code; `#[kernels(engine)]` compiles the kernels of
+//! an `impl` block for an engine. Re-exported by `raads`; see its docs.
 //!
 //! Generated code names `raads` by the path the calling crate gives it, so a renamed
 //! dependency (`aad = { package = "raads", .. }`) works.
@@ -8,7 +9,7 @@
 
 use proc_macro::TokenStream;
 use proc_macro_crate::FoundCrate;
-use proc_macro2::{Span, TokenStream as Tokens};
+use proc_macro2::TokenStream as Tokens;
 use quote::{format_ident, quote};
 use raads_codegen::emit::{self, Kind};
 use raads_codegen::{Group, Signature};
@@ -16,37 +17,8 @@ use syn::spanned::Spanned;
 use syn::{Error, FnArg, ItemFn, Pat, Result, ReturnType, Type};
 
 mod front;
-mod legacy;
 mod model;
 use front::{Builder, Param, Shape};
-
-/// Compile a Monte Carlo model: an `impl` block with the kernels
-/// `setup(p: [N; NP], #[data] n_steps: N) -> [N; NC]`, `init(p: [N; NP]) -> [N; NS]`,
-/// `step(s: [N; NS], c: [N; NC], #[data] z: [N; NZ]) -> [N; NS]` and
-/// `payoff(s: [N; NS], p: [N; NP], c: [N; NC]) -> N`, written like `#[kernel]` functions.
-/// Keeps them as associated functions and implements `raads::McModel`.
-#[proc_macro_attribute]
-pub fn mc_model(attr: TokenStream, item: TokenStream) -> TokenStream {
-    if !attr.is_empty() {
-        return Error::new(Tokens::from(attr).span(), "`#[mc_model]` takes no arguments").to_compile_error().into();
-    }
-    let imp = syn::parse_macro_input!(item as syn::ItemImpl);
-    legacy::mc(imp).unwrap_or_else(|e| e.to_compile_error()).into()
-}
-
-/// Compile a finite-difference model: an `impl` block with the kernels
-/// `coeffs(#[data] x: N, p: [N; NP]) -> [N; 3]` (a, b, c of `V_τ = a V_xx + b V_x - c V`),
-/// `payoff(#[data] x: N, p: [N; NP]) -> N`, `spot(p: [N; NP]) -> N` (log-spot) and
-/// `maturity(p: [N; NP]) -> N`, plus optional `const AMERICAN: bool` and
-/// `const EXERCISE_EPS: f64`. Implements `raads::FdModel`.
-#[proc_macro_attribute]
-pub fn fd_model(attr: TokenStream, item: TokenStream) -> TokenStream {
-    if !attr.is_empty() {
-        return Error::new(Tokens::from(attr).span(), "`#[fd_model]` takes no arguments").to_compile_error().into();
-    }
-    let imp = syn::parse_macro_input!(item as syn::ItemImpl);
-    legacy::fd(imp).unwrap_or_else(|e| e.to_compile_error()).into()
-}
 
 /// Compile every function of an inherent `impl` block as a kernel (like `#[kernel]`) and
 /// implement the trait of the engine module `path` from them: `#[kernels(path)]`.
@@ -80,8 +52,8 @@ pub fn check_kernels(input: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// #[kernel]
-/// fn payoff<N: AdNum>(s: [N; 1], p: [N; 5]) -> N {
-///     (s[0].exp() - p[4]).relu() * (-p[1] * p[3]).exp()
+/// fn f<N: AdNum>(v: [N; 2], #[data] z: N) -> N {
+///     (v[0] * v[1]).exp() + (v[0] * v[0] + z).sqrt() / v[1]
 /// }
 /// ```
 ///
@@ -95,7 +67,7 @@ pub fn check_kernels(input: TokenStream) -> TokenStream {
 /// or a local. Integer literals are `f64`s (`x * 2`), and plain `f64`s are accepted where
 /// an `N` is expected (`x.maximum(0.0)`). Parameter names `y`, `res`, `a_*`, and `v` or `a`
 /// followed by digits are reserved by the generated code, as is the generic parameter name
-/// `R` on a model `impl`.
+/// `R` on a `#[kernels]` `impl`.
 ///
 /// The generated code refers to `raads` by the name the calling crate's `Cargo.toml` gives
 /// it, so a renamed dependency (`aad = { package = "raads", .. }`) works.
@@ -111,10 +83,6 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// A compiled kernel: the rewritten source function and the generated items.
 pub(crate) struct Compiled {
     pub source: ItemFn,
-    /// Parameters in signature order, and the result shape and type span.
-    pub params: Vec<Param>,
-    pub ret: Shape,
-    pub ret_span: Span,
     pub eval: Tokens,
     pub vjp: Tokens,
     pub fwd: Tokens,
@@ -203,10 +171,10 @@ pub(crate) fn compile(mut f: ItemFn, vis: &str, names: [&str; 4], krate: &Tokens
                 ),
             ));
         }
-        params.push(Param { name, shape: shape(&pt.ty, &n)?, data, span: pt.ty.span() });
+        params.push(Param { name, shape: shape(&pt.ty, &n)?, data });
     }
-    let (ret, ret_span) = match &f.sig.output {
-        ReturnType::Type(_, t) => (shape(t, &n)?, t.span()),
+    let ret = match &f.sig.output {
+        ReturnType::Type(_, t) => shape(t, &n)?,
         ReturnType::Default => return Err(Error::new(f.sig.span(), "a kernel returns `N` or `[N; LEN]`")),
     };
     let mut b = Builder::new(&params, &n, krate);
@@ -241,7 +209,7 @@ pub(crate) fn compile(mut f: ItemFn, vis: &str, names: [&str; 4], krate: &Tokens
     let nres = emit::nres(&b.g);
     let graph = b.graph_code();
     *f.block = syn::parse2(quote!({ #body }))?;
-    Ok(Compiled { source: f, params, ret, ret_span, eval, vjp, fwd, bwd, nres, graph })
+    Ok(Compiled { source: f, eval, vjp, fwd, bwd, nres, graph })
 }
 
 /// Names the generated code uses next to the parameters: `res` (residuals), `a_y` and
