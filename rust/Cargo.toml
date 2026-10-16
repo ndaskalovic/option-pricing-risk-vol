@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/raad", "crates/raad-codegen", "crates/raad-macros", "crates/raad-models"]
+members = ["crates/raads", "crates/raads-codegen", "crates/raads-macros", "crates/raads-models"]
 
 [workspace.package]
 version = "0.1.0"
@@ -10,8 +10,8 @@ repository = "https://github.com/ndaskalovic/option-pricing-risk-vol"
 rust-version = "1.89"
 
 [workspace.dependencies]
-raad-codegen = { path = "crates/raad-codegen", version = "0.1.0" }
-raad-macros = { path = "crates/raad-macros", version = "0.1.0" }
+raads-codegen = { path = "crates/raads-codegen", version = "0.1.0" }
+raads-macros = { path = "crates/raads-macros", version = "0.1.0" }
 
 [profile.test]
 opt-level = 3

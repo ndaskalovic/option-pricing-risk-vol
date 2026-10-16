@@ -1,0 +1,32 @@
+[package]
+name = "raads-models"
+description = "Example models, engine tests and benchmarks for raads"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+raads = { path = "../raads" }
+
+[dev-dependencies]
+rand = "0.9"
+rand_distr = "0.5"
+libm = "0.2"
+
+[[bench]]
+name = "mc"
+harness = false
+
+[[bench]]
+name = "fd"
+harness = false
+
+[[bench]]
+name = "surface"
+harness = false
+
+[[bench]]
+name = "second_order"
+harness = false

@@ -122,35 +122,35 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
 
 [[package]]
-name = "raad"
+name = "raads"
 version = "0.1.0"
 dependencies = [
- "raad-codegen",
- "raad-macros",
+ "raads-codegen",
+ "raads-macros",
  "rand",
  "trybuild",
 ]
 
 [[package]]
-name = "raad-codegen"
+name = "raads-codegen"
 version = "0.1.0"
 
 [[package]]
-name = "raad-macros"
+name = "raads-macros"
 version = "0.1.0"
 dependencies = [
  "proc-macro2",
  "quote",
- "raad-codegen",
+ "raads-codegen",
  "syn 2.0.119",
 ]
 
 [[package]]
-name = "raad-models"
+name = "raads-models"
 version = "0.1.0"
 dependencies = [
  "libm",
- "raad",
+ "raads",
  "rand",
  "rand_distr",
 ]
