@@ -9,17 +9,113 @@ What is asserted (and therefore claimed):
     1%-bump reference within 5e-3; with the hard max only the S0 row/column (gamma, vanna, ...)
     is valid;
   * MC (softplus-smoothed payoff, eps=0.5): gamma and vanna match Black-Scholes within 4 standard
-    errors; the kinked payoff needs `mc_hessian_bumped`.
+    errors; the kinked payoff needs bumping of the AAD gradient.
 
 Run from repo root: mojo run -I . tests/test_second_order.mojo
 """
 from std.os import abort
 from std.math import log
 from std.memory.alloc import unsafe_alloc
-from engines import McModel, FdModel, Hessian, mc_compiled, mc_hessian, mc_hessian_bumped, fd_compiled, fd_hessian, fd_hessian_bumped
+from autodiff import Real, Vec, Dual
+from engines import McModel, FdModel, mc_greeks, fd_greeks
 from models.gbm import GbmCall, GbmCallSmooth
 from models.bs_fd import BsEuroCall, BsAmericanPut, BsAmericanPutSmooth
 import std.random
+
+comptime DT = DType.float64
+comptime WM = 8                 # MC lanes
+
+
+struct Hessian[NP: Int](Movable):
+    var price: Float64
+    var h: Array[Float64, Self.NP * Self.NP]   # row-major
+
+    def __init__(out self, price: Float64, var h: Array[Float64, Self.NP * Self.NP]):
+        self.price = price
+        self.h = h^
+
+    def get(self, i: Int, j: Int) -> Float64:
+        return self.h[i * Self.NP + j]
+
+
+def lane0(v: SIMD) -> Float64:
+    return Float64(v[0].cast[DType.float64]())
+
+
+def seeded[R: Real, NP: Int](p: Array[Float64, NP], j: Int) -> Array[Dual[R.DT, R.W], NP]:
+    """Parameters as Dual values with tangent e_j."""
+    comptime D = Dual[R.DT, R.W]
+    var r = Array[D, NP](fill=D.splat(0))
+    for i in range(NP):
+        r[i] = D(SIMD[R.DT, R.W](p[i]), SIMD[R.DT, R.W](1.0 if i == j else 0.0))
+    return r^
+
+
+def plain[R: Real, NP: Int](p: Array[Float64, NP]) -> Array[Vec[R.DT, R.W], NP]:
+    comptime V = Vec[R.DT, R.W]
+    var r = Array[V, NP](fill=V.splat(0))
+    for i in range(NP):
+        r[i] = V.splat(p[i])
+    return r^
+
+
+def bump[NP: Int](p: Array[Float64, NP], j: Int, rel_bump: Float64, sign: Float64) -> Array[Float64, NP]:
+    var q = p.copy()
+    q[j] += sign * rel_bump * max(abs(p[j]), 1e-2)
+    return q^
+
+
+# Full Hessians: one forward-over-reverse pass per column (Dual parameters seeded with e_j).
+def fd_hessian[M: FdModel](p: Array[Float64, M.NP], lo: Float64, hi: Float64, nx: Int, nt: Int) -> Hessian[M.NP]:
+    var h = Array[Float64, M.NP * M.NP](fill=0)
+    var price = 0.0
+    for j in range(M.NP):
+        var r = fd_greeks[M, Dual[DT, 1]](seeded[Vec[DT, 1], M.NP](p, j), lo, hi, nx, nt)
+        price = lane0(r.price.value())
+        for i in range(M.NP):
+            h[i * M.NP + j] = lane0(r.grad[i].tangent())
+    return Hessian[M.NP](price, h^)
+
+
+def mc_hessian[M: McModel](p: Array[Float64, M.NP], n_steps: Int, n_paths: Int, z: Pointer[Float32, _]) -> Hessian[M.NP]:
+    var h = Array[Float64, M.NP * M.NP](fill=0)
+    var price = 0.0
+    for j in range(M.NP):
+        var r = mc_greeks[M, Dual[DT, WM]](seeded[Vec[DT, WM], M.NP](p, j), n_steps, n_paths, z)
+        price = r.price
+        for i in range(M.NP):
+            h[i * M.NP + j] = r.grad_tangent[i]
+    return Hessian[M.NP](price, h^)
+
+
+# References (not AD): central differences of the exact first-order AAD gradient.
+def fd_hessian_bumped[M: FdModel](p: Array[Float64, M.NP], lo: Float64, hi: Float64, nx: Int, nt: Int,
+                                  rel_bump: Float64) -> Hessian[M.NP]:
+    comptime V = Vec[DT, 1]
+    var h = Array[Float64, M.NP * M.NP](fill=0)
+    for j in range(M.NP):
+        var e = rel_bump * max(abs(p[j]), 1e-2)
+        var gp = fd_greeks[M, V](plain[V, M.NP](bump(p, j, rel_bump, 1.0)), lo, hi, nx, nt)
+        var gm = fd_greeks[M, V](plain[V, M.NP](bump(p, j, rel_bump, -1.0)), lo, hi, nx, nt)
+        for i in range(M.NP):
+            h[i * M.NP + j] = (lane0(gp.grad[i].value()) - lane0(gm.grad[i].value())) / (2 * e)
+    var base = fd_greeks[M, V](plain[V, M.NP](p), lo, hi, nx, nt)
+    return Hessian[M.NP](lane0(base.price.value()), h^)
+
+
+def mc_hessian_bumped[M: McModel](p: Array[Float64, M.NP], n_steps: Int, n_paths: Int, z: Pointer[Float32, _],
+                                  rel_bump: Float64) -> Hessian[M.NP]:
+    comptime V = Vec[DT, WM]
+    var h = Array[Float64, M.NP * M.NP](fill=0)
+    for j in range(M.NP):
+        var e = rel_bump * max(abs(p[j]), 1e-2)
+        var gp = mc_greeks[M, V](plain[V, M.NP](bump(p, j, rel_bump, 1.0)), n_steps, n_paths, z)
+        var gm = mc_greeks[M, V](plain[V, M.NP](bump(p, j, rel_bump, -1.0)), n_steps, n_paths, z)
+        for i in range(M.NP):
+            h[i * M.NP + j] = (gp.grad[i] - gm.grad[i]) / (2 * e)
+    var base = mc_greeks[M, V](plain[V, M.NP](p), n_steps, n_paths, z)
+    return Hessian[M.NP](base.price, h^)
+
 
 comptime S0 = 0
 comptime RATE = 1
@@ -109,9 +205,9 @@ def main() raises:
 
     # ── FD European call ──────────────────────────────────────────────
     print("FD European call", nx, "x", nt)
-    var he = fd_hessian[BsEuroCall, 1, DType.float64](p, lo, hi, nx, nt)
-    var tiny = fd_hessian_bumped[BsEuroCall, 1, DType.float64](p, lo, hi, nx, nt, 1e-4)
-    var big = fd_hessian_bumped[BsEuroCall, 1, DType.float64](p, lo, hi, nx, nt, 1e-2)
+    var he = fd_hessian[BsEuroCall](p, lo, hi, nx, nt)
+    var tiny = fd_hessian_bumped[BsEuroCall](p, lo, hi, nx, nt, 1e-4)
+    var big = fd_hessian_bumped[BsEuroCall](p, lo, hi, nx, nt, 1e-2)
     show("  AD Hessian", he)
     check_le(failures, "exact: max rel vs FD of AAD gradient (h=1e-4)", max_rel_vs(he, tiny, 1e-6, False), 1e-5)
     check_le(failures, "symmetry: max rel asymmetry", max_asym(he), 1e-9)
@@ -125,27 +221,27 @@ def main() raises:
     check(failures, "gamma", he.get(S0, S0), bsh[0], 2e-3)
     check(failures, "vanna d2/dS0dsigma", he.get(S0, SIG), bsh[2], 2e-3)
     check(failures, "volga d2/dsigma2", he.get(SIG, SIG), bsh[12], 2e-3)
-    check(failures, "d2/dK2 via fd_hessian_bumped (1%)", big.get(STRIKE, STRIKE), bsh[24], 5e-3)
+    check(failures, "d2/dK2 by bumping the AAD gradient (1%)", big.get(STRIKE, STRIKE), bsh[24], 5e-3)
     print("    (AD d2/dK2 =", he.get(STRIKE, STRIKE), ": the strike only enters through the kinked payoff)")
 
     # ── FD American put ───────────────────────────────────────────────
     print("FD American put", nx, "x", nt)
     comptime AS = BsAmericanPutSmooth[0.002]
-    var ha = fd_hessian[AS, 1, DType.float64](p, lo, hi, nx, nt)
-    var ha_tiny = fd_hessian_bumped[AS, 1, DType.float64](p, lo, hi, nx, nt, 1e-4)
-    var ha_big = fd_hessian_bumped[AS, 1, DType.float64](p, lo, hi, nx, nt, 1e-2)
+    var ha = fd_hessian[AS](p, lo, hi, nx, nt)
+    var ha_tiny = fd_hessian_bumped[AS](p, lo, hi, nx, nt, 1e-4)
+    var ha_big = fd_hessian_bumped[AS](p, lo, hi, nx, nt, 1e-2)
     show("  AD Hessian, smoothed exercise eps=0.002", ha)
     check_le(failures, "exact: max rel vs FD of AAD gradient (h=1e-4)", max_rel_vs(ha, ha_tiny, 1e-3, False), 2e-3)
     check_le(failures, "symmetry", max_asym(ha), 1e-9)
     check_le(failures, "vs 1%-bump reference, max rel (all but d2/dK2)", max_rel_vs(ha, ha_big, 1e-3, True), 5e-3)
-    var hard = fd_hessian[BsAmericanPut, 1, DType.float64](p, lo, hi, nx, nt)
-    var hard_big = fd_hessian_bumped[BsAmericanPut, 1, DType.float64](p, lo, hi, nx, nt, 1e-2)
+    var hard = fd_hessian[BsAmericanPut](p, lo, hi, nx, nt)
+    var hard_big = fd_hessian_bumped[BsAmericanPut](p, lo, hi, nx, nt, 1e-2)
     var hw = 0.0
     for j in range(5):
         hw = max(hw, rel(hard.get(S0, j), hard_big.get(S0, j)))
     check_le(failures, "hard max: S0 row vs 1%-bump reference", hw, 2e-3)
     check(failures, "hard max gamma vs smoothed gamma", hard.get(S0, S0), ha.get(S0, S0), 2e-3)
-    check(failures, "d2/dK2 via fd_hessian_bumped (hard max)", hard_big.get(STRIKE, STRIKE), ha_big.get(STRIKE, STRIKE), 1e-2)
+    check(failures, "d2/dK2 by bumping (hard max)", hard_big.get(STRIKE, STRIKE), ha_big.get(STRIKE, STRIKE), 1e-2)
     print("    price: hard max", hard.price, " smoothed", ha.price, " (smoothing shifts the price; use the hard max for price / first order)")
 
     # ── MC ────────────────────────────────────────────────────────────
@@ -155,18 +251,18 @@ def main() raises:
     std.random.seed(42)
     std.random.randn[DType.float32](z, n_paths * n_steps * 8)
     print("MC 200k x 52, softplus-smoothed payoff eps=0.5")
-    var hm = mc_hessian[GbmCallSmooth, 8, DType.float64](p, n_steps, n_paths, z)
-    var hm_tiny = mc_hessian_bumped[GbmCallSmooth, 8, DType.float64](p, n_steps, n_paths, z, 1e-4)
+    var hm = mc_hessian[GbmCallSmooth](p, n_steps, n_paths, z)
+    var hm_tiny = mc_hessian_bumped[GbmCallSmooth](p, n_steps, n_paths, z, 1e-4)
     show("  AD Hessian", hm)
     check_le(failures, "exact: max rel vs FD of AAD gradient (h=1e-4)", max_rel_vs(hm, hm_tiny, 1e-6, False), 1e-5)
     check_le(failures, "symmetry", max_asym(hm), 1e-9)
     # 4 single-run standard errors (measured over 8 seeds): gamma 1.4e-4, vanna 3.1e-3
     check_abs(failures, "gamma vs Black-Scholes (4 SE)", hm.get(S0, S0), bsh[0], 6e-4)
     check_abs(failures, "vanna vs Black-Scholes (4 SE)", hm.get(S0, SIG), bsh[2], 1.3e-2)
-    var hk = mc_hessian[GbmCall, 8, DType.float64](p, n_steps, n_paths, z)
-    var hkb = mc_hessian_bumped[GbmCall, 8, DType.float64](p, n_steps, n_paths, z, 1e-2)
+    var hk = mc_hessian[GbmCall](p, n_steps, n_paths, z)
+    var hkb = mc_hessian_bumped[GbmCall](p, n_steps, n_paths, z, 1e-2)
     print("    kinked payoff: AD (pathwise) gamma", hk.get(S0, S0), "<- misses the Dirac term at the strike")
-    check_abs(failures, "kinked payoff: gamma via mc_hessian_bumped (1%)", hkb.get(S0, S0), bsh[0], 1.5e-3)
+    check_abs(failures, "kinked payoff: gamma by bumping (1%)", hkb.get(S0, S0), bsh[0], 1.5e-3)
     z.unsafe_free()
 
     if failures > 0:

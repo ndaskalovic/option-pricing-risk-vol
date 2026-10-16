@@ -10,44 +10,37 @@ Counts are per thread (other processes do not pollute instruction/uop counts).
 from std.memory.alloc import unsafe_alloc
 from std.math import log
 from std.ffi import external_call
-from autodiff import Number, Tape
-from engines import mc_compiled, fd_compiled, fd_price
+from autodiff import Vec
+from engines import mc_greeks, fd_greeks, fd_price
 from models.gbm import GbmCall
 from models.bs_fd import BsAmericanPut
-from vanilla_euro_call import EuropeanCallOption
 import std.random
 
 comptime NEV = 6
-comptime NWORK = 4
+comptime NWORK = 3
 comptime NS = 52
 comptime W = 32
 
 
 @no_inline
 def work(w: Int, nP: Int, z: Pointer[Float32, _]) -> Float64:
-    var p = Array[Float64, 5](fill=0)
-    p[0] = 100; p[1] = 0.01; p[2] = 0.2; p[3] = 1.0; p[4] = 100
     if w == 0:
-        var r = mc_compiled[GbmCall, W, DType.float32](p, NS, nP, z)
+        comptime R = Vec[DType.float32, W]
+        var p = Array[R, 5](fill=R.splat(0))
+        p[0] = R.splat(100); p[1] = R.splat(0.01); p[2] = R.splat(0.2); p[3] = R.splat(1.0); p[4] = R.splat(100)
+        var r = mc_greeks[GbmCall, R](p, NS, nP, z)
         return r.price + r.grad[0] + r.grad[1] + r.grad[2] + r.grad[3] + r.grad[4]
-    if w == 1:
-        var t = Tape[W, DType.float32](NS * 8 + 64)
-        var s0 = Number[W, DType.float32](100, t); var r = Number[W, DType.float32](0.01, t)
-        var sg = Number[W, DType.float32](0.2, t); var T = Number[W, DType.float32](1.0, t)
-        var K = Number[W, DType.float32](100.0, t)
-        t.set_mark()
-        var v = EuropeanCallOption[W, DType.float32](s0, r, sg, T, K, NS, nP, z)
-        var d = Float64(v.mean()) + Float64(s0.mean_grad()) + Float64(sg.mean_grad()) + Float64(r.mean_grad())
-        t.free()
-        return d
+    comptime R1 = Vec[DType.float64, 1]
+    var q = Array[R1, 5](fill=R1.splat(0))
+    q[0] = R1.splat(100); q[1] = R1.splat(0.01); q[2] = R1.splat(0.2); q[3] = R1.splat(1.0); q[4] = R1.splat(100)
     var lo = log(100.0) - 1.2; var hi = log(100.0) + 1.2
-    if w == 2:
-        var f = fd_compiled[BsAmericanPut, 1, DType.float64](p, lo, hi, 401, 400)
-        return f.price + f.grad[0] + f.grad[1] + f.grad[2] + f.grad[3] + f.grad[4]
-    var pv = Array[SIMD[DType.float64, 1], 5](fill=0)
-    for j in range(5):
-        pv[j] = p[j]
-    return Float64(fd_price[BsAmericanPut, 1, DType.float64](pv, lo, hi, 401, 400)[0])
+    if w == 1:
+        var f = fd_greeks[BsAmericanPut, R1](q, lo, hi, 401, 400)
+        var s = f.price.value()
+        for j in range(5):
+            s += f.grad[j].value()
+        return Float64(s[0])
+    return Float64(fd_price[BsAmericanPut, R1](q, lo, hi, 401, 400).value()[0])
 
 
 def fmt(x: Float64) -> String:
@@ -61,7 +54,7 @@ def main() raises:
     var nP = 200_000 // W
     var z = unsafe_alloc[Float32](NS * nP * W)
     std.random.seed(7); std.random.randn[DType.float32](z, NS * nP * W)
-    var names: List[String] = ["MC compiled", "MC tape", "FD Amer 401x400", "FD price only"]
+    var names: List[String] = ["MC compiled", "FD Amer 401x400", "FD price only"]
     var a = unsafe_alloc[UInt64](NEV); var b = unsafe_alloc[UInt64](NEV)
     var res = unsafe_alloc[UInt64](NWORK * NEV)
     print("per-run counts in millions (best of 7 by cycles); MC: GBM call 200k x 52 f32 W=32; FD: American put f64")

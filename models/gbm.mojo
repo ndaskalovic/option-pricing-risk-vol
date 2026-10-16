@@ -1,5 +1,5 @@
 """GBM European and Asian calls, written once against ADNum (log-space exact scheme)."""
-from autodiff.ct import ADNum, smooth_relu
+from autodiff import ADNum
 from engines import McModel
 
 
@@ -67,6 +67,14 @@ struct GbmAsianCall(McModel):
     def payoff[N: ADNum](s: Array[N, Self.NS], p: Array[N, Self.NP], c: Array[N, Self.NC]) -> N:
         var r = p[1]; var T = p[3]; var K = p[4]
         return (s[1] * c[2] - K).relu() * (-r * T).exp()
+
+
+@always_inline
+def smooth_relu[N: ADNum](x: N, eps: Float64) -> N:
+    """Softplus max(x, 0) of width eps, eps * log(1 + exp(x / eps)), in overflow-safe form.
+    Makes pathwise second derivatives (gamma, vanna) consistent; price bias O(eps^2)."""
+    var ax = N.select_gt(x, x.constant(0.0), x, -x)
+    return x.relu() + eps * (1.0 + (-ax / eps).exp()).log()
 
 
 struct GbmCallSmooth(McModel):

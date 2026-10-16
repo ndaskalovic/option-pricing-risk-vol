@@ -4,12 +4,12 @@ Run from repo root: mojo run -I . tests/test_fd_surface.mojo
 1. European surface (price, delta, gamma, theta, dV/dK; Dual vega, rho) vs Black-Scholes closed form
 2. Dual tangents (vega, rho) == central bumps of the surface (European exact, American)
 3. American book: reverse-sweep gradient == sum of position-weighted forward tangents (exact)
-4. American surface prices vs the single-option engine (fd_compiled, BsAmericanPut)
+4. American surface prices vs the single-option engine (fd_price, BsAmericanPut)
 """
 from std.math import exp, log, sqrt, erf
 from std.os import abort
-from autodiff.ct import Vec, Dual
-from engines import FdSurface, SurfacePoint, fd_surface, fd_surface_book, fd_compiled
+from autodiff import Vec, Dual
+from engines import FdSurface, SurfacePoint, fd_surface, fd_surface_book, fd_price
 from models.bs_fd import BsPutMoneyness, BsAmericanPut
 import std.random
 
@@ -181,19 +181,19 @@ def main() raises:
     book.surface.free()
 
     # ── 4. American surface vs the single-option engine (q = 0) ──
-    print("4. American surface (q=0) vs fd_compiled[BsAmericanPut] 801x800 per option")
+    print("4. American surface (q=0) vs fd_price[BsAmericanPut] 801x800 per option")
     var p0 = Array[V1, 3](fill=V1.splat(0))
     p0[0] = V1.splat(R_); p0[1] = V1.splat(0.0); p0[2] = V1.splat(SIG)
     var s0 = fd_surface[BsPutMoneyness[True], V1](p0, lo, hi, nx, T, 1.0 / 1000)
     var e4 = 0.0
     for m in range(len(T)):
         for k in [80.0, 100.0, 120.0]:
-            var q = Array[Float64, 5](fill=0)
-            q[0] = S0; q[1] = R_; q[2] = SIG; q[3] = T[m]; q[4] = k
+            var q = Array[V1, 5](fill=V1.splat(0))
+            q[0] = V1.splat(S0); q[1] = V1.splat(R_); q[2] = V1.splat(SIG); q[3] = V1.splat(T[m]); q[4] = V1.splat(k)
             var z = 5.0 * SIG * sqrt(T[m])
-            var single = fd_compiled[BsAmericanPut, 1, F](q, log(S0) - 0.5 - z, log(S0) + 0.5 + z, 801, 800)
+            var single = Float64(fd_price[BsAmericanPut, V1](q, log(S0) - 0.5 - z, log(S0) + 0.5 + z, 801, 800).value()[0])
             var surf = Float64(s0.option(m, SIMD[F, 1](S0), SIMD[F, 1](k))[0].value()[0])
-            e4 = max(e4, abs(surf - single.price))
+            e4 = max(e4, abs(surf - single))
     s0.free()
     check(fails, "price vs single-option engine (abs, S=100)", e4, 2e-3)
 

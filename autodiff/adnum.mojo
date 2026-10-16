@@ -1,7 +1,7 @@
 """The supported-operations API. Kernels are written once, generic over `N: ADNum`.
 
-Implementations: `TraceNum` (compile-time graph capture, used by `Compiled`) and
-`TapeNum` (the runtime tape, used as a flexible fallback and as the test oracle).
+The implementation is `TraceNum`: `Compiled` evaluates a kernel on it inside the compiler
+to capture its graph, then emits straight-line forward and reverse code.
 Comparisons are only available through `select_gt`, so every kernel is branch-free
 on differentiable values: the graph is identical on every call.
 """
@@ -30,7 +30,7 @@ trait ADNum(ImplicitlyCopyable, Movable, Deinitable):
         """Same value, zero derivative (like JAX's stop_gradient)."""
         ...
     def constant(self, k: Float64) -> Self:
-        """A constant of the same kind as `self` (same graph / tape)."""
+        """A constant of the same kind as `self` (same graph)."""
         ...
 
     @staticmethod
@@ -47,16 +47,3 @@ def maximum[N: ADNum](a: N, b: N) -> N:
 @always_inline
 def minimum[N: ADNum](a: N, b: N) -> N:
     return N.select_gt(a, b, b, a)
-
-
-@always_inline
-def absolute[N: ADNum](x: N) -> N:
-    return N.select_gt(x, x.constant(0.0), x, -x)
-
-
-@always_inline
-def smooth_relu[N: ADNum](x: N, eps: Float64) -> N:
-    """Softplus max(x, 0) of width eps: eps * log(1 + exp(x / eps)), in overflow-safe form.
-    Smooth payoffs make pathwise MC second derivatives (gamma, vanna, volga) consistent;
-    the price bias is O(eps^2) times the density at the kink."""
-    return x.relu() + eps * (1.0 + (-absolute(x) / eps).exp()).log()
