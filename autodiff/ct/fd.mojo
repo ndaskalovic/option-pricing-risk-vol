@@ -103,7 +103,7 @@ struct FdResult[NP: Int](Movable, Writable):
             writer.write(self.grad[j], ", " if j < Self.NP - 1 else "]")
 
 
-struct _Buf[R: Real]:
+struct _Buf[R: Real](ImplicitlyCopyable, Movable):
     """Plain heap array of runtime values."""
     var p: Pointer[Self.R, MutUntrackedOrigin]
 

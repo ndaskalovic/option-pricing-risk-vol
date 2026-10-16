@@ -74,3 +74,32 @@ struct BsAmericanPutSmooth[eps: Float64 = 0.01](FdModel):
     @staticmethod
     def maturity[N: ADNum](p: Array[N, Self.NP]) -> N:
         return p[3]
+
+
+struct BsPutMoneyness[american: Bool = True](FdModel):
+    """Unit-strike put on x = log(S/K) for the surface engine: V(S, K, T) = K u(log(S/K), T),
+    so one solve prices every strike. params: r, q (continuous dividend yield), sigma."""
+    comptime NP = 3
+    comptime AMERICAN = Self.american
+    comptime EXERCISE_EPS = 0.0
+
+    @staticmethod
+    def coeffs[N: ADNum](x: N, p: Array[N, Self.NP]) -> Array[N, 3]:
+        var r = p[0]; var q = p[1]; var sigma = p[2]
+        var k = Array[N, 3](fill=r)
+        k[0] = 0.5 * sigma * sigma
+        k[1] = r - q - 0.5 * sigma * sigma
+        k[2] = r
+        return k^
+
+    @staticmethod
+    def payoff[N: ADNum](x: N, p: Array[N, Self.NP]) -> N:
+        return (1.0 - x.exp()).relu()
+
+    @staticmethod
+    def spot[N: ADNum](p: Array[N, Self.NP]) -> N:
+        return p[0].constant(0.0)       # unused by the surface engine
+
+    @staticmethod
+    def maturity[N: ADNum](p: Array[N, Self.NP]) -> N:
+        return p[0].constant(0.0)       # unused: maturities are the surface's time grid
