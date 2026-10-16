@@ -1,0 +1,17 @@
+[package]
+name = "raad-macros"
+description = "#[kernel] and model attribute macros for raad"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+raad-codegen.workspace = true
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

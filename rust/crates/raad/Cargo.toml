@@ -1,0 +1,15 @@
+[package]
+name = "raad"
+description = "Compile-time adjoint algorithmic differentiation for option pricing: Monte Carlo and finite-difference Greeks"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+raad-codegen.workspace = true
+raad-macros.workspace = true
+
+[dev-dependencies]
+rand = "0.9"

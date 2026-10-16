@@ -15,39 +15,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4e7648175b45a9a48536d676f68d918270699102aa8dab5496df06904c914600"
 
 [[package]]
-name = "ctad"
-version = "0.1.0"
-dependencies = [
- "ctad-codegen",
- "ctad-macros",
- "rand",
-]
-
-[[package]]
-name = "ctad-codegen"
-version = "0.1.0"
-
-[[package]]
-name = "ctad-macros"
-version = "0.1.0"
-dependencies = [
- "ctad-codegen",
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "ctad-models"
-version = "0.1.0"
-dependencies = [
- "ctad",
- "libm",
- "rand",
- "rand_distr",
-]
-
-[[package]]
 name = "getrandom"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -113,6 +80,39 @@ name = "r-efi"
 version = "5.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69cdb34c158ceb288df11e18b4bd39de994f6657d83847bdffdbd7f346754b0f"
+
+[[package]]
+name = "raad"
+version = "0.1.0"
+dependencies = [
+ "raad-codegen",
+ "raad-macros",
+ "rand",
+]
+
+[[package]]
+name = "raad-codegen"
+version = "0.1.0"
+
+[[package]]
+name = "raad-macros"
+version = "0.1.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "raad-codegen",
+ "syn",
+]
+
+[[package]]
+name = "raad-models"
+version = "0.1.0"
+dependencies = [
+ "libm",
+ "raad",
+ "rand",
+ "rand_distr",
+]
 
 [[package]]
 name = "rand"
