@@ -26,3 +26,7 @@ harness = false
 [[bench]]
 name = "surface"
 harness = false
+
+[[bench]]
+name = "second_order"
+harness = false
