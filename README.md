@@ -2,7 +2,7 @@
 
 Adjoint algorithmic differentiation (AAD) for option Greeks, written in [Mojo](https://www.modular.com/mojo). It started as part of my master's thesis on AAD for Monte Carlo Greeks under Black-Scholes.
 
-You write a model once as a few small functions. The compiler differentiates them at compile time, and the Monte Carlo and finite-difference engines return the price and every Greek in one run. Run the same engine on `Dual` numbers and you also get second-order Greeks (Hessian-vector products).
+You write a model once as a few small functions. The compiler differentiates them at compile time, and the Monte Carlo and finite-difference engines return the price and every Greek in one run.
 
 ## Example
 
@@ -35,23 +35,4 @@ var r = mc_greeks[GbmCall, Vec[DType.float32, 32]](params, n_steps, n_paths, nor
 print(r.price, r.grad[0], r.grad[2])      # price, delta, vega
 ```
 
-- **Finite differences** work the same way: `fd_greeks[BsAmericanPut, Vec[DType.float64, 1]](params, x_lo, x_hi, 201, 200)`.
-- **Second order:** pass `Dual` parameters seeded with a direction v, and the gradient's tangent is H·v.
-- **Whole surfaces:** `fd_surface` prices every strike and maturity of an underlier in one solve.
-
-## Layout
-
-```
-autodiff/     compile-time AD: ADNum, Kernel, Compiled, Scan, Real (Vec, Dual)
-engines/      Monte Carlo, finite differences, FD surface
-models/       GBM and Asian calls, SVI call, Black-Scholes European/American
-tests/        forward == reverse, gradients and Hessians vs finite differences, vs Black-Scholes and CRR
-benchmarks/   timing
-```
-
-## Setup
-
-```bash
-uv sync                                            # Mojo 1.1 into .venv
-.venv/bin/mojo run -I . tests/test_mc_engine.mojo
-```
+Finite-difference models (e.g. an American put) work the same way: `fd_greeks[BsAmericanPut, Vec[DType.float64, 1]](params, x_lo, x_hi, 201, 200)`.
