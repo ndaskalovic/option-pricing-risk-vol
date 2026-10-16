@@ -1,0 +1,59 @@
+name: rust
+
+on:
+  push:
+    paths: ["rust/**", ".github/workflows/rust.yml"]
+  pull_request:
+    paths: ["rust/**", ".github/workflows/rust.yml"]
+
+env:
+  CARGO_TERM_COLOR: always
+
+defaults:
+  run:
+    working-directory: rust
+
+jobs:
+  test:
+    name: test (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: aarch64 neon, os: macos-latest, rustflags: "" }
+          - { name: x86_64 portable, os: ubuntu-latest, rustflags: "" }
+          - { name: x86_64 avx2, os: ubuntu-latest, rustflags: "-C target-cpu=x86-64-v3" }
+          - { name: x86_64 avx512, os: ubuntu-latest, rustflags: "-C target-cpu=x86-64-v4", needs: avx512f }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: check CPU support
+        if: matrix.needs
+        id: cpu
+        run: grep -qw ${{ matrix.needs }} /proc/cpuinfo && echo ok=1 >> "$GITHUB_OUTPUT" || echo "::notice::runner lacks ${{ matrix.needs }}, skipping"
+      - name: cargo test
+        if: ${{ !matrix.needs || steps.cpu.outputs.ok }}
+        env:
+          RUSTFLAGS: ${{ matrix.rustflags }}
+        run: cargo test --workspace
+
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+      - run: cargo check --workspace --lib
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings

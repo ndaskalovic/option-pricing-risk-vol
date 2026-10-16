@@ -8,6 +8,9 @@ edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/ndaskalovic/option-pricing-risk-vol"
 rust-version = "1.89"
+authors = ["Nicholas Daskalovic <daskalovic.n@gmail.com>"]
+keywords = ["autodiff", "aad", "greeks", "option-pricing", "simd"]
+categories = ["mathematics", "science", "finance"]
 
 [workspace.dependencies]
 raads-codegen = { path = "crates/raads-codegen", version = "0.1.0" }
