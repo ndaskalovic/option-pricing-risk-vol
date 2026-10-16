@@ -13,6 +13,7 @@ ctad = { path = "../ctad" }
 [dev-dependencies]
 rand = "0.9"
 rand_distr = "0.5"
+libm = "0.2"
 
 [[bench]]
 name = "mc"

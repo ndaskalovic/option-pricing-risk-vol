@@ -42,6 +42,7 @@ name = "ctad-models"
 version = "0.1.0"
 dependencies = [
  "ctad",
+ "libm",
  "rand",
  "rand_distr",
 ]

@@ -13,6 +13,7 @@ pub mod fd;
 pub mod lanes;
 pub mod mc;
 mod real;
+pub mod surface;
 pub mod trace;
 
 pub use adnum::AdNum;
@@ -22,4 +23,5 @@ pub use lanes::Lanes;
 pub use real::{Dual, Real};
 pub use ctad_macros::{fd_model, kernel, mc_model};
 pub use fd::{FdModel, FdResult, Grid, fd_greeks, fd_price};
+pub use surface::{FdBook, FdSurface, SurfaceGrid, SurfacePoint, fd_surface, fd_surface_book};
 pub use mc::{McModel, McResult, mc_greeks};
