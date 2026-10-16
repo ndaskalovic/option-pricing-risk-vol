@@ -22,3 +22,7 @@ harness = false
 [[bench]]
 name = "fd"
 harness = false
+
+[[bench]]
+name = "surface"
+harness = false
