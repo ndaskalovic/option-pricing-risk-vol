@@ -9,9 +9,9 @@
 //! It also returns the function body rewritten so it compiles for any `N: AdNum`
 //! (`2.0 * x` becomes `x.rmul(2.0)`), which is the eager / tracer version of the kernel.
 
-use raads_codegen::{Graph, NONE, Op, f64_literal};
 use proc_macro2::{Span, TokenStream};
 use quote::{ToTokens, quote, quote_spanned};
+use raads_codegen::{Graph, NONE, Op, f64_literal};
 use std::collections::HashMap;
 use syn::spanned::Spanned;
 use syn::{BinOp, Error, Expr, Lit, Pat, Result, Stmt, UnOp};
@@ -168,12 +168,8 @@ impl Builder {
             }
             (Pat::Type(t), v) => self.bind(&t.pat, v),
             (Pat::Wild(_), _) => Ok(()),
-            (Pat::Tuple(t), Val::Arr(vs)) if t.elems.len() == vs.len() => {
-                t.elems.iter().zip(vs).try_for_each(|(p, v)| self.bind(p, v))
-            }
-            (Pat::Slice(s), Val::Arr(vs)) if s.elems.len() == vs.len() => {
-                s.elems.iter().zip(vs).try_for_each(|(p, v)| self.bind(p, v))
-            }
+            (Pat::Tuple(t), Val::Arr(vs)) if t.elems.len() == vs.len() => t.elems.iter().zip(vs).try_for_each(|(p, v)| self.bind(p, v)),
+            (Pat::Slice(s), Val::Arr(vs)) if s.elems.len() == vs.len() => s.elems.iter().zip(vs).try_for_each(|(p, v)| self.bind(p, v)),
             (p, _) => err(p.span(), "unsupported pattern (use a name, `_`, or a tuple/array of them)"),
         }
     }
@@ -403,7 +399,12 @@ impl Builder {
                 let m = self.push(Op::Mul, ce, l, NONE, NONE);
                 self.binary(Op::Add, relu, m)
             }
-            _ => return err(m.method.span(), "unsupported method in a kernel (exp ln sqrt powf relu detach maximum minimum smooth_relu radd rsub rmul rdiv)"),
+            _ => {
+                return err(
+                    m.method.span(),
+                    "unsupported method in a kernel (exp ln sqrt powf relu detach maximum minimum smooth_relu radd rsub rmul rdiv)",
+                );
+            }
         };
         Ok((v, src))
     }

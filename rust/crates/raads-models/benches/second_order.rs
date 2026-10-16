@@ -50,12 +50,15 @@ fn mc<L: Lanes>(z: &[f32]) {
             let h = mc_greeks::<M, Dual<L>>(&dual(V), NS, n_paths, z);
             h.price_tangent + h.grad_tangent.iter().sum::<f64>()
         });
-        chk += timed(&mut b[2], || (0..5).map(|j| mc_greeks::<M, Dual<L>>(&dual(unit(j)), NS, n_paths, z).grad_tangent.iter().sum::<f64>()).sum());
+        chk += timed(&mut b[2], || {
+            (0..5).map(|j| mc_greeks::<M, Dual<L>>(&dual(unit(j)), NS, n_paths, z).grad_tangent.iter().sum::<f64>()).sum()
+        });
         chk += timed(&mut b[3], || {
             let base = mc_greeks::<M, L>(&vec(P), NS, n_paths, z).price;
             base + (0..5)
                 .map(|j| {
-                    let (gp, gm) = (mc_greeks::<M, L>(&vec(bumped(j, 1.0)), NS, n_paths, z), mc_greeks::<M, L>(&vec(bumped(j, -1.0)), NS, n_paths, z));
+                    let (gp, gm) =
+                        (mc_greeks::<M, L>(&vec(bumped(j, 1.0)), NS, n_paths, z), mc_greeks::<M, L>(&vec(bumped(j, -1.0)), NS, n_paths, z));
                     (0..5).map(|i| gp.grad[i] - gm.grad[i]).sum::<f64>()
                 })
                 .sum::<f64>()

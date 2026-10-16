@@ -3,11 +3,11 @@
 
 #![warn(missing_docs)]
 
-use raads_codegen::emit::{self, Kind};
-use raads_codegen::{Group, Signature};
 use proc_macro::TokenStream;
 use proc_macro2::{Span, TokenStream as Tokens};
 use quote::quote;
+use raads_codegen::emit::{self, Kind};
+use raads_codegen::{Group, Signature};
 use syn::spanned::Spanned;
 use syn::{Error, FnArg, ItemFn, Pat, Result, ReturnType, Type};
 
@@ -145,7 +145,9 @@ pub(crate) fn compile(mut f: ItemFn, vis: &str, names: [&str; 4]) -> Result<Comp
         if is_reserved(&name) {
             return Err(Error::new(
                 id.span(),
-                format!("parameter name `{name}` is reserved by the generated code (reserved: `y`, `res`, `a_*`, `v` or `a` followed by digits)"),
+                format!(
+                    "parameter name `{name}` is reserved by the generated code (reserved: `y`, `res`, `a_*`, `v` or `a` followed by digits)"
+                ),
             ));
         }
         params.push(Param { name, shape: shape(&pt.ty, &n)?, data, span: pt.ty.span() });

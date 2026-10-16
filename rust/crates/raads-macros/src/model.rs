@@ -55,11 +55,8 @@ fn dim_str(d: Dim) -> String {
 
 impl Spec {
     fn signature(&self) -> String {
-        let ps: Vec<String> = self
-            .params
-            .iter()
-            .map(|(n, d, data)| format!("{}{n}: {}", if *data { "#[data] " } else { "" }, dim_str(*d)))
-            .collect();
+        let ps: Vec<String> =
+            self.params.iter().map(|(n, d, data)| format!("{}{n}: {}", if *data { "#[data] " } else { "" }, dim_str(*d))).collect();
         format!("`{}({}) -> {}`", self.name, ps.join(", "), dim_str(self.ret))
     }
 }

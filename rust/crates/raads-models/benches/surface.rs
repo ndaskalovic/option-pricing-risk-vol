@@ -47,7 +47,15 @@ impl Market {
         let mut rng = StdRng::seed_from_u64(43);
         for &sv in &s {
             q.push(if rng.random::<f64>() < 0.4 { 0.0 } else { rng.random_range(0.0..0.05) });
-            let inc: f64 = if sv < 25.0 { 0.5 } else if sv < 100.0 { 1.0 } else if sv < 250.0 { 2.5 } else { 5.0 };
+            let inc: f64 = if sv < 25.0 {
+                0.5
+            } else if sv < 100.0 {
+                1.0
+            } else if sv < 250.0 {
+                2.5
+            } else {
+                5.0
+            };
             for j in 0..NK {
                 let m = 0.5 + j as f64 / (NK - 1) as f64;
                 k.push(inc.max(((sv * m / inc + 0.5) as i64) as f64 * inc));
@@ -182,17 +190,16 @@ fn main() {
     let quick = std::env::args().any(|a| a == "quick");
     let mk = Market::new();
     println!("2000 underliers x 20 maturities x 25 strikes = 1M American puts; one FD solve per underlier, f64, single core");
-    let cfgs: &[(f64, f64)] = if quick { &[(0.02, 1.0 / 100.0), (0.01, 1.0 / 250.0)] } else { &[(0.02, 1.0 / 100.0), (0.01, 1.0 / 250.0), (0.005, 1.0 / 500.0)] };
+    let cfgs: &[(f64, f64)] =
+        if quick { &[(0.02, 1.0 / 100.0), (0.01, 1.0 / 250.0)] } else { &[(0.02, 1.0 / 100.0), (0.01, 1.0 / 250.0), (0.005, 1.0 / 500.0)] };
     for &(h, dt) in cfgs {
         let mut best = [f64::INFINITY; 4];
         let mut chk = 0.0;
         for _ in 0..3 {
-            let runs: [&dyn Fn() -> f64; 4] = [
-                &|| run_values::<F64x4>(&mk, h, dt),
-                &|| run_dual::<F64x4>(&mk, h, dt),
-                &|| run_bumped(&mk, h, dt),
-                &|| run_book(&mk, h, dt),
-            ];
+            let runs: [&dyn Fn() -> f64; 4] =
+                [&|| run_values::<F64x4>(&mk, h, dt), &|| run_dual::<F64x4>(&mk, h, dt), &|| run_bumped(&mk, h, dt), &|| {
+                    run_book(&mk, h, dt)
+                }];
             for (i, r) in runs.iter().enumerate() {
                 let (s, c) = secs(r);
                 best[i] = best[i].min(s);
@@ -201,7 +208,13 @@ fn main() {
         }
         println!(
             "h {h} dt {dt:.4} | values {:.3} s | + vega, rho via Dual {:.3} s ({:.2}x) | via bumps {:.3} s ({:.2}x) | book + 3 sensitivities {:.3} s ({:.2}x) | chk {chk:.6e}",
-            best[0], best[1], best[1] / best[0], best[2], best[2] / best[0], best[3], best[3] / best[0]
+            best[0],
+            best[1],
+            best[1] / best[0],
+            best[2],
+            best[2] / best[0],
+            best[3],
+            best[3] / best[0]
         );
     }
     // SIMD width: wider batches give no extra throughput (h 0.01)

@@ -7,8 +7,8 @@
 //! 5. stop-gradient: detach contributes its value, not its derivative
 //! 6. the macro's graph == the tracer's graph; node and residual counts == Mojo's
 
-use raads::lanes::F64x4;
 use raads::__private::{Tracer, trace};
+use raads::lanes::F64x4;
 use raads::{AdNum, Dual, Lanes, kernel};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};

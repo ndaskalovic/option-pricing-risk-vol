@@ -2,8 +2,8 @@
 //! the graph the tracer records by running the same function, and the compiled code
 //! computes what the eager function computes.
 
-use raads::lanes::F64x4;
 use raads::__private::{Tracer, trace};
+use raads::lanes::F64x4;
 use raads::{AdNum, Lanes, kernel};
 
 const K: f64 = 1.5;

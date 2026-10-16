@@ -119,9 +119,8 @@ impl<R: Real> FdSurface<R> {
     /// Nearest interior node per lane (at least two nodes from either end) and the offset
     /// `t = (x - x_j) / h`.
     fn weights(&self, x: R::Lanes) -> (Vec<usize>, R::Lanes) {
-        let j: Vec<usize> = (0..R::Lanes::W)
-            .map(|l| (((x.lane(l) - self.x_lo) / self.h + 0.5) as i64).clamp(2, self.nx as i64 - 3) as usize)
-            .collect();
+        let j: Vec<usize> =
+            (0..R::Lanes::W).map(|l| (((x.lane(l) - self.x_lo) / self.h + 0.5) as i64).clamp(2, self.nx as i64 - 3) as usize).collect();
         let xj = R::Lanes::from_fn(|l| self.x_lo + j[l] as f64 * self.h);
         (j, (x - xj) / self.h)
     }
@@ -183,7 +182,8 @@ fn surface_core<M: FdModel, R: Real, const GRADS: bool>(
     let last = bl[bl.len() - 1];
     let mut ys = vec![R::from(0.0); if GRADS { (last.level0 + last.steps + 1) * nx } else { 0 }];
     let zero = R::from(0.0);
-    let mut surf = FdSurface { x_lo: g.x_lo, h: sc.h, nx, slices: vec![zero; maturities.len() * nx], taus: vec![zero; maturities.len() * nx] };
+    let mut surf =
+        FdSurface { x_lo: g.x_lo, h: sc.h, nx, slices: vec![zero; maturities.len() * nx], taus: vec![zero; maturities.len() * nx] };
     if GRADS {
         ys[..nx].copy_from_slice(&sc.cur);
     }

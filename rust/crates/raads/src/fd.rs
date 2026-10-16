@@ -312,9 +312,8 @@ impl<M: FdModel, R: Real> Scheme<M, R> {
 
     /// `Σ_i (al l + ad dd + au u)`: the dt adjoint per unit dt, before `rescale`.
     pub fn operator_dot(&self) -> R {
-        (0..self.nx).fold(R::from(0.0), |s, i| {
-            self.al[i].mul_add(self.l[i], self.ad[i].mul_add(self.dd[i], self.au[i].mul_add(self.u[i], s)))
-        })
+        (0..self.nx)
+            .fold(R::from(0.0), |s, i| self.al[i].mul_add(self.l[i], self.ad[i].mul_add(self.dd[i], self.au[i].mul_add(self.u[i], s))))
     }
 
     /// Multiply the accumulated operator adjoints by `f`. One block: `f = dt` at the end.

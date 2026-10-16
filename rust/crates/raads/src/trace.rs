@@ -129,9 +129,7 @@ impl AdNum for Tracer {
 }
 
 /// Trace `f` with `NI` differentiable inputs and `ND` data inputs (recorded in that order).
-pub fn trace<const NI: usize, const ND: usize, const NO: usize>(
-    f: impl FnOnce([Tracer; NI], [Tracer; ND]) -> [Tracer; NO],
-) -> Graph {
+pub fn trace<const NI: usize, const ND: usize, const NO: usize>(f: impl FnOnce([Tracer; NI], [Tracer; ND]) -> [Tracer; NO]) -> Graph {
     G.with(|g| *g.borrow_mut() = Graph::default());
     let x = std::array::from_fn(|i| push(Op::Input(i), NONE, NONE, NONE, NONE));
     let d = std::array::from_fn(|i| push(Op::Data(i), NONE, NONE, NONE, NONE));

@@ -26,7 +26,11 @@ fn check<L: Lanes>(name: &str) {
         exact(lane(y.sqrt(), i), b.sqrt(), "sqrt");
         exact(lane(L::select_gt(x, y, x, y), i), if a > b { a } else { b }, "select_gt");
         exact(lane(x.mul_add(y, x), i), if f32_ { (a as f32).mul_add(b as f32, a as f32) as f64 } else { a.mul_add(b, a) }, "mul_add");
-        exact(lane(x.nmul_add(y, x), i), if f32_ { (-(a as f32)).mul_add(b as f32, a as f32) as f64 } else { (-a).mul_add(b, a) }, "nmul_add");
+        exact(
+            lane(x.nmul_add(y, x), i),
+            if f32_ { (-(a as f32)).mul_add(b as f32, a as f32) as f64 } else { (-a).mul_add(b, a) },
+            "nmul_add",
+        );
         let tol = if f32_ { 3e-7 } else { 1e-15 };
         let rel = |got: f64, want: f64, op: &str| {
             assert!(((got - want) / want).abs() <= tol, "{name} {op} lane {i}: {got} vs {want}");
@@ -55,10 +59,63 @@ fn edges<L: Lanes>(name: &str) {
         if f32_ { (f32::MAX as f64, f32::MIN_POSITIVE as f64, 1.5e-45, 3e-7) } else { (f64::MAX, f64::MIN_POSITIVE, 5e-324, 1e-15) };
     let reference = |x: f64| if f32_ { (x as f32).exp() as f64 } else { x.exp() };
     let xs = [
-        0.0, -0.0, 1e-30, -1e-30, 0.346_573_59, -0.346_573_59, 10.0, -10.0, 80.0, -80.0, 86.9, -86.9, 87.0, -87.0, -87.3, -87.4,
-        -87.5, -87.6, -88.0, 88.0, 88.5, 88.7, 88.72, 88.73, 89.0, 89.5, -100.0, -103.0, -104.0, -110.0, -200.0, 100.0, 700.0,
-        708.0, 709.0, 709.5, 709.7, 709.78, 709.79, 710.0, 711.0, -708.0, -708.3, -708.5, -708.7, -709.0, -720.0, -745.0,
-        -746.0, -750.0, 1e10, -1e10, f64::MAX, f64::MIN, f64::INFINITY, f64::NEG_INFINITY, f64::NAN,
+        0.0,
+        -0.0,
+        1e-30,
+        -1e-30,
+        0.346_573_59,
+        -0.346_573_59,
+        10.0,
+        -10.0,
+        80.0,
+        -80.0,
+        86.9,
+        -86.9,
+        87.0,
+        -87.0,
+        -87.3,
+        -87.4,
+        -87.5,
+        -87.6,
+        -88.0,
+        88.0,
+        88.5,
+        88.7,
+        88.72,
+        88.73,
+        89.0,
+        89.5,
+        -100.0,
+        -103.0,
+        -104.0,
+        -110.0,
+        -200.0,
+        100.0,
+        700.0,
+        708.0,
+        709.0,
+        709.5,
+        709.7,
+        709.78,
+        709.79,
+        710.0,
+        711.0,
+        -708.0,
+        -708.3,
+        -708.5,
+        -708.7,
+        -709.0,
+        -720.0,
+        -745.0,
+        -746.0,
+        -750.0,
+        1e10,
+        -1e10,
+        f64::MAX,
+        f64::MIN,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::NAN,
     ];
     for (b, xb) in xs.chunks(L::W).enumerate() {
         let e = L::from_fn(|i| xb[i % xb.len()]).exp();

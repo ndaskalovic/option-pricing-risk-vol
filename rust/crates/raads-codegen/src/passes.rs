@@ -102,9 +102,7 @@ pub fn reads(g: &Graph, need: &[bool]) -> Vec<bool> {
 /// Values `fwd` saves for `bwd`: read by the reverse sweep and not rematerialised
 /// (data and constants are), in node order.
 pub fn residuals(g: &Graph, reads: &[bool]) -> Vec<usize> {
-    (0..g.len())
-        .filter(|&i| reads[i] && !matches!(g.nodes[i].op, Op::Data(_) | Op::Const(_)))
-        .collect()
+    (0..g.len()).filter(|&i| reads[i] && !matches!(g.nodes[i].op, Op::Data(_) | Op::Const(_))).collect()
 }
 
 /// All analyses of one graph.

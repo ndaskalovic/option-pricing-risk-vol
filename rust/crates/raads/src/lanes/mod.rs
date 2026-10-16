@@ -73,10 +73,7 @@ pub trait Lanes: Real<Lanes = Self> + Debug + PartialEq {
 ///   `x < -708.05`) flush to 0, subnormals and the bottom half binade of normals alike.
 /// - `scalef` (AVX-512): `vscalef` applies `2^n` with correct rounding, overflow to `+inf`
 ///   and gradual underflow.
-#[cfg(any(
-    target_arch = "aarch64",
-    all(target_arch = "x86_64", target_feature = "avx2", target_feature = "fma")
-))]
+#[cfg(any(target_arch = "aarch64", all(target_arch = "x86_64", target_feature = "avx2", target_feature = "fma")))]
 pub(crate) mod exp_poly {
     pub mod f32 {
         pub const LOG2E: f32 = std::f32::consts::LOG2_E;
@@ -200,12 +197,7 @@ mod aliases {
     pub type F64x16 = F64z<2>;
 }
 
-#[cfg(all(
-    target_arch = "x86_64",
-    not(target_feature = "avx512f"),
-    target_feature = "avx2",
-    target_feature = "fma"
-))]
+#[cfg(all(target_arch = "x86_64", not(target_feature = "avx512f"), target_feature = "avx2", target_feature = "fma"))]
 mod aliases {
     use super::avx2::{F32, F32h, F64, F64h};
     /// 4 lanes of `f32`.

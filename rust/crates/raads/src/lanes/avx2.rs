@@ -21,8 +21,8 @@ pub(super) const NEAREST: i32 = core::arch::x86_64::_MM_FROUND_TO_NEAREST_INT | 
 
 /// Register ops for `__m128` (4 × `f32`).
 mod m128 {
-    use core::arch::x86_64::*;
     pub use crate::lanes::exp_poly::f32::bits as exp;
+    use core::arch::x86_64::*;
     pub type V = __m128;
     #[inline(always)]
     pub fn splat(k: f32) -> V {
@@ -97,8 +97,8 @@ mod m128 {
 
 /// Register ops for `__m128d` (2 × `f64`).
 mod m128d {
-    use core::arch::x86_64::*;
     pub use crate::lanes::exp_poly::f64::bits as exp;
+    use core::arch::x86_64::*;
     pub type V = __m128d;
     #[inline(always)]
     pub fn splat(k: f64) -> V {
@@ -176,8 +176,8 @@ mod m128d {
 
 /// Register ops for `__m256` (8 × `f32`).
 mod m256 {
-    use core::arch::x86_64::*;
     pub use crate::lanes::exp_poly::f32::bits as exp;
+    use core::arch::x86_64::*;
     pub type V = __m256;
     #[inline(always)]
     pub fn splat(k: f32) -> V {
@@ -255,8 +255,8 @@ mod m256 {
 
 /// Register ops for `__m256d` (4 × `f64`).
 mod m256d {
-    use core::arch::x86_64::*;
     pub use crate::lanes::exp_poly::f64::bits as exp;
+    use core::arch::x86_64::*;
     pub type V = __m256d;
     #[inline(always)]
     pub fn splat(k: f64) -> V {

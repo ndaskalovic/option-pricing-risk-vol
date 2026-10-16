@@ -11,8 +11,8 @@ use super::avx2::{NEAREST, x86_pack};
 
 /// Register ops for `__m512` (16 × `f32`).
 mod m512 {
-    use core::arch::x86_64::*;
     pub use crate::lanes::exp_poly::f32::scalef as exp;
+    use core::arch::x86_64::*;
     pub type V = __m512;
     #[inline(always)]
     pub fn splat(k: f32) -> V {
@@ -88,8 +88,8 @@ mod m512 {
 
 /// Register ops for `__m512d` (8 × `f64`).
 mod m512d {
-    use core::arch::x86_64::*;
     pub use crate::lanes::exp_poly::f64::scalef as exp;
+    use core::arch::x86_64::*;
     pub type V = __m512d;
     #[inline(always)]
     pub fn splat(k: f64) -> V {
