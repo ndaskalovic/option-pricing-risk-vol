@@ -1,6 +1,8 @@
 //! Attribute macros for `raads`: `#[kernel]` turns a function written against `N: AdNum`
 //! into straight-line forward and reverse code. Re-exported by `raads`; see its docs.
 
+#![warn(missing_docs)]
+
 use raads_codegen::emit::{self, Kind};
 use raads_codegen::{Group, Signature};
 use proc_macro::TokenStream;
@@ -104,7 +106,7 @@ fn kernel_fn(f: ItemFn) -> Result<Tokens> {
             #bwd
             /// The kernel graph (for tests against the tracer).
             #[doc(hidden)]
-            pub fn graph() -> ::raads::codegen::Graph { #graph }
+            pub fn graph() -> ::raads::__private::codegen::Graph { #graph }
         }
     })
 }

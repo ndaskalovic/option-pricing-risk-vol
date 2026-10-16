@@ -10,12 +10,12 @@
 //!   the kinked payoff needs bumping of the AAD gradient.
 
 use raads::lanes::F64x8;
-use raads::{Dual, FdModel, Grid, McModel, fd_greeks, mc_greeks};
+use raads::{Arr, Dual, FdGrid, FdModel, McModel, fd_greeks, mc_greeks};
 use raads_models::bs_fd::{BsAmericanPut, BsAmericanPutSmooth, BsEuroCall};
 use raads_models::gbm::{GbmCall, GbmCallSmooth};
 
 mod common;
-use common::{Checks, arr, rel};
+use common::{Checks, rel};
 
 const NP: usize = 5;
 const S0: usize = 0;
@@ -23,7 +23,7 @@ const SIG: usize = 2;
 const STRIKE: usize = 4;
 const P: [f64; NP] = [100.0, 0.01, 0.2, 1.0, 100.0];
 const N_STEPS: usize = 52;
-const N_PATHS: usize = 200_000 / 8;
+const N_PATHS: usize = 200_000;
 
 /// Black-Scholes Hessian over (S0, r, sigma, T, K), mpmath at 40 digits, row-major.
 const BS: [f64; 25] = [
@@ -52,12 +52,12 @@ fn bump(p: [f64; NP], j: usize, rel: f64, sign: f64) -> [f64; NP] {
     q
 }
 
-fn grid() -> Grid {
-    Grid::new(100f64.ln() - 1.2, 100f64.ln() + 1.2, 401, 400)
+fn grid() -> FdGrid {
+    FdGrid::new(100f64.ln() - 1.2, 100f64.ln() + 1.2, 401, 400)
 }
 
 fn normals() -> Vec<f32> {
-    common::normals(N_PATHS * N_STEPS * 8, 42)
+    common::normals(N_PATHS * N_STEPS, 42)
 }
 
 /// One forward-over-reverse pass per column (Dual parameters seeded with e_j).
@@ -65,7 +65,7 @@ fn fd_hessian<M: FdModel>(p: [f64; NP]) -> Hessian {
     let mut h = [0.0; NP * NP];
     let mut price = 0.0;
     for j in 0..NP {
-        let pd: M::P<Dual<f64>> = arr(|i| Dual::new(p[i], if i == j { 1.0 } else { 0.0 }));
+        let pd: M::P<Dual<f64>> = Arr::from_fn(|i| Dual::new(p[i], if i == j { 1.0 } else { 0.0 }));
         let r = fd_greeks::<M, Dual<f64>>(&pd, &grid());
         price = r.price.v;
         for i in 0..NP {
@@ -80,7 +80,7 @@ fn mc_hessian<M: McModel>(p: [f64; NP], z: &[f32]) -> Hessian {
     let mut h = [0.0; NP * NP];
     let mut price = 0.0;
     for j in 0..NP {
-        let pd: M::P<D> = arr(|i| D::new(F64x8::from(p[i]), F64x8::from(if i == j { 1.0 } else { 0.0 })));
+        let pd: M::P<D> = Arr::from_fn(|i| D::new(F64x8::from(p[i]), F64x8::from(if i == j { 1.0 } else { 0.0 })));
         let r = mc_greeks::<M, D>(&pd, N_STEPS, N_PATHS, z);
         price = r.price;
         for i in 0..NP {
@@ -92,7 +92,7 @@ fn mc_hessian<M: McModel>(p: [f64; NP], z: &[f32]) -> Hessian {
 
 /// Reference (not AD): central differences of the exact first-order AAD gradient.
 fn fd_hessian_bumped<M: FdModel>(p: [f64; NP], rel: f64) -> Hessian {
-    let g = |q: [f64; NP]| fd_greeks::<M, f64>(&arr(|i| q[i]), &grid());
+    let g = |q: [f64; NP]| fd_greeks::<M, f64>(&Arr::from_fn(|i| q[i]), &grid());
     let mut h = [0.0; NP * NP];
     for j in 0..NP {
         let e = rel * p[j].abs().max(1e-2);
@@ -105,7 +105,7 @@ fn fd_hessian_bumped<M: FdModel>(p: [f64; NP], rel: f64) -> Hessian {
 }
 
 fn mc_hessian_bumped<M: McModel>(p: [f64; NP], z: &[f32], rel: f64) -> Hessian {
-    let g = |q: [f64; NP]| mc_greeks::<M, F64x8>(&arr(|i| F64x8::from(q[i])), N_STEPS, N_PATHS, z);
+    let g = |q: [f64; NP]| mc_greeks::<M, F64x8>(&Arr::from_fn(|i| F64x8::from(q[i])), N_STEPS, N_PATHS, z);
     let mut h = [0.0; NP * NP];
     for j in 0..NP {
         let e = rel * p[j].abs().max(1e-2);

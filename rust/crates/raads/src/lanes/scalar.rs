@@ -3,6 +3,8 @@
 use super::Lanes;
 use crate::{AdNum, Real};
 
+impl crate::sealed::Sealed for f64 {}
+
 impl AdNum for f64 {
     #[inline(always)]
     fn exp(self) -> f64 {

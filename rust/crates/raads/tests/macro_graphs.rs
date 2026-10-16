@@ -3,7 +3,7 @@
 //! computes what the eager function computes.
 
 use raads::lanes::F64x4;
-use raads::trace::{Tracer, trace};
+use raads::__private::{Tracer, trace};
 use raads::{AdNum, Lanes, kernel};
 
 const K: f64 = 1.5;

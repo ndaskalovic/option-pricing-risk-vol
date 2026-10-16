@@ -6,11 +6,11 @@
 //! exercise; f32 vs f64 Greeks; the argument checks.
 
 use raads::lanes::{F32x4, F64x4};
-use raads::{Dual, FdModel, Grid, Lanes, fd_greeks, fd_price};
+use raads::{Arr, Dual, FdGrid, FdModel, Lanes, fd_greeks, fd_price};
 use raads_models::bs_fd::{BsAmericanPut, BsAmericanPutSmooth, BsEuroCall};
 
 mod common;
-use common::{Checks, arr, rel};
+use common::{Checks, rel};
 
 type D = Dual<f64>;
 
@@ -31,22 +31,16 @@ fn crr_american_put(s: f64, k: f64, r: f64, sigma: f64, t: f64, n: usize) -> f64
 }
 
 fn params<M: FdModel>(p: &[f64]) -> M::P<f64> {
-    let mut r: M::P<f64> = raads::Arr::splat(0.0);
-    r.as_mut().copy_from_slice(p);
-    r
+    Arr::from_fn(|i| p[i])
 }
 
-fn verify<M: FdModel>(c: &mut Checks, label: &str, p: &[f64], g: &Grid, fd_tol: f64) {
+fn verify<M: FdModel>(c: &mut Checks, label: &str, p: &[f64], g: &FdGrid, fd_tol: f64) {
     println!("{label} {}x{}", g.nx, g.nt);
     let r = fd_greeks::<M, f64>(&params::<M>(p), g);
     // dot test: forward tangent of the price through the scheme vs the reverse sweep
-    let mut pd: M::P<D> = raads::Arr::splat(D::from(0.0));
-    let mut gv = 0.0;
-    for (j, x) in pd.as_mut().iter_mut().enumerate() {
-        let v = 0.3 + 0.1 * j as f64;
-        *x = D::new(p[j], v);
-        gv += r.grad.as_ref()[j] * v;
-    }
+    let v = |j: usize| 0.3 + 0.1 * j as f64;
+    let pd: M::P<D> = Arr::from_fn(|j| D::new(p[j], v(j)));
+    let gv: f64 = r.grad.as_ref().iter().enumerate().map(|(j, g)| g * v(j)).sum();
     let d = fd_greeks::<M, D>(&pd, g);
     c.le(&format!("{label}: dot test (rel)"), (d.price.t - gv).abs() / gv.abs(), 1e-12);
     // gradient vs central differences of the price-only solve
@@ -67,11 +61,11 @@ fn fd_engine() {
     let mut c = Checks::default();
     let p = [100.0, 0.01, 0.2, 1.0, 100.0];
     let (lo, hi) = (100f64.ln() - 6.0 * 0.2, 100f64.ln() + 6.0 * 0.2);
-    let g201 = Grid::new(lo, hi, 201, 200);
+    let g201 = FdGrid::new(lo, hi, 201, 200);
     verify::<BsEuroCall>(&mut c, "European call", &p, &g201, 1e-6);
     verify::<BsAmericanPut>(&mut c, "American put", &p, &g201, 1e-6);
 
-    let g801 = Grid::new(lo, hi, 801, 800);
+    let g801 = FdGrid::new(lo, hi, 801, 800);
     let e = fd_greeks::<BsEuroCall, f64>(&p, &g801);
     let bs = [8.433318690109608, 0.5596176923702425, 47.52845054691464, 39.447933090788894, 4.420077814548036, -0.4752845054691464];
     let mut worst = (e.price - bs[0]).abs() / bs[0];
@@ -111,17 +105,17 @@ fn fd_engine() {
 /// compared relative to max(|g|, 1e-3): the smoothed exercise calls `exp`, which differs in the
 /// last bit between the lanes (polynomial) and `f64` (libm), and some Greeks are ~1e-8 here.
 fn lanes_vs_single<M: FdModel>(c: &mut Checks, label: &str) {
-    let g = Grid::new(100f64.ln() - 1.2, 100f64.ln() + 1.2, 201, 200);
+    let g = FdGrid::new(100f64.ln() - 1.2, 100f64.ln() + 1.2, 201, 200);
     let spots = [55.0, 100.0, 131.7, 400.0];
     let base = [100.0, 0.01, 0.2, 1.0, 100.0];
-    let pv: M::P<F64x4> = arr(|j| if j == 0 { F64x4::from_fn(|l| spots[l]) } else { F64x4::from(base[j]) });
+    let pv: M::P<F64x4> = Arr::from_fn(|j| if j == 0 { F64x4::from_fn(|l| spots[l]) } else { F64x4::from(base[j]) });
     let r = fd_greeks::<M, F64x4>(&pv, &g);
     let v = |j: usize| 0.3 + 0.1 * j as f64;
-    let pd: M::P<Dual<F64x4>> = arr(|j| Dual::new(pv.as_ref()[j], F64x4::from(v(j))));
+    let pd: M::P<Dual<F64x4>> = Arr::from_fn(|j| Dual::new(pv.as_ref()[j], F64x4::from(v(j))));
     let d = fd_greeks::<M, Dual<F64x4>>(&pd, &g);
     let (mut e, mut ed) = (0.0f64, 0.0f64);
     for (l, &s) in spots.iter().enumerate() {
-        let sg = fd_greeks::<M, f64>(&arr(|j| if j == 0 { s } else { base[j] }), &g);
+        let sg = fd_greeks::<M, f64>(&Arr::from_fn(|j| if j == 0 { s } else { base[j] }), &g);
         e = e.max(rel(r.price.lane(l), sg.price));
         for j in 0..5 {
             e = e.max((r.grad.as_ref()[j].lane(l) - sg.grad.as_ref()[j]).abs() / sg.grad.as_ref()[j].abs().max(1e-3));
@@ -146,7 +140,7 @@ fn fd_lanes_different_spots() {
 /// f32 lanes on 201x200: price and Greeks within 1e-4 of f64 (f32 is for coarse grids).
 #[test]
 fn fd_f32_vs_f64() {
-    let g = Grid::new(100f64.ln() - 1.2, 100f64.ln() + 1.2, 201, 200);
+    let g = FdGrid::new(100f64.ln() - 1.2, 100f64.ln() + 1.2, 201, 200);
     let p = [100.0, 0.01, 0.2, 1.0, 100.0];
     let mut c = Checks::default();
     for american in [false, true] {
@@ -167,11 +161,11 @@ fn fd_f32_vs_f64() {
 #[test]
 #[should_panic(expected = "need at least 1 time step")]
 fn fd_zero_steps() {
-    fd_greeks::<BsEuroCall, f64>(&[100.0, 0.01, 0.2, 1.0, 100.0], &Grid::new(3.0, 6.0, 51, 0));
+    let _ = fd_greeks::<BsEuroCall, f64>(&[100.0, 0.01, 0.2, 1.0, 100.0], &FdGrid::new(3.0, 6.0, 51, 0));
 }
 
 #[test]
 #[should_panic(expected = "need at least 3 grid nodes")]
 fn fd_two_nodes() {
-    fd_price::<BsEuroCall, f64>(&[100.0, 0.01, 0.2, 1.0, 100.0], &Grid::new(3.0, 6.0, 2, 10));
+    let _ = fd_price::<BsEuroCall, f64>(&[100.0, 0.01, 0.2, 1.0, 100.0], &FdGrid::new(3.0, 6.0, 2, 10));
 }

@@ -8,6 +8,8 @@ use crate::AdNum;
 use crate::lanes::Lanes;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
 
+/// A runtime value of generated code and engines: a [`Lanes`] pack or a [`Dual`] of one.
+/// Sealed through [`AdNum`].
 pub trait Real: AdNum + AddAssign + SubAssign + Send + Sync + 'static {
     /// The SIMD pack holding values (and tangents).
     type Lanes: Lanes;
@@ -18,7 +20,9 @@ pub trait Real: AdNum + AddAssign + SubAssign + Send + Sync + 'static {
     }
     /// Constant pack (zero tangent).
     fn lift(v: Self::Lanes) -> Self;
+    /// The values.
     fn value(self) -> Self::Lanes;
+    /// The tangents (zero for a [`Lanes`] pack).
     fn tangent(self) -> Self::Lanes;
     /// `self * b + c`, fused.
     fn mul_add(self, b: Self, c: Self) -> Self;
@@ -33,11 +37,16 @@ pub trait Real: AdNum + AddAssign + SubAssign + Send + Sync + 'static {
 /// Value and one tangent direction, lane-wise.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Dual<L> {
+    /// Value.
     pub v: L,
+    /// Tangent.
     pub t: L,
 }
 
+impl<L> crate::sealed::Sealed for Dual<L> {}
+
 impl<L: Lanes> Dual<L> {
+    /// Value `v` with tangent `t`.
     #[inline(always)]
     pub fn new(v: L, t: L) -> Self {
         Dual { v, t }

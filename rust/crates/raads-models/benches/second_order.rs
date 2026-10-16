@@ -6,7 +6,7 @@
 //! Every output is consumed.
 
 use raads::lanes::{F32x16, F32x32, F64x4, F64x8};
-use raads::{Arr, Dual, FdModel, Grid, Lanes, McModel, fd_greeks, fd_price, mc_greeks};
+use raads::{Arr, Dual, FdGrid, FdModel, Lanes, McModel, fd_greeks, fd_price, mc_greeks};
 use raads_models::bs_fd::{BsAmericanPut, BsAmericanPutSmooth};
 use raads_models::gbm::GbmCallSmooth;
 use rand::SeedableRng;
@@ -19,14 +19,6 @@ const NS: usize = 52;
 const REPS: usize = 11;
 const P: [f64; 5] = [100.0, 0.01, 0.2, 1.0, 100.0];
 const V: [f64; 5] = [1.0, 0.3, -0.5, 0.2, 0.7];
-
-fn arr<A: Arr<T>, T: Copy>(f: impl Fn(usize) -> T) -> A {
-    let mut a = A::splat(f(0));
-    for (i, x) in a.as_mut().iter_mut().enumerate() {
-        *x = f(i);
-    }
-    a
-}
 
 fn bumped(j: usize, s: f64) -> [f64; 5] {
     let mut q = P;
@@ -43,9 +35,9 @@ fn timed(t: &mut f64, f: impl FnOnce() -> f64) -> f64 {
 
 fn mc<L: Lanes>(z: &[f32]) {
     type M = GbmCallSmooth;
-    let n_paths = 200_000 / L::W;
-    let vec = |p: [f64; 5]| -> <M as McModel>::P<L> { arr(|i| L::from(p[i])) };
-    let dual = |v: [f64; 5]| -> <M as McModel>::P<Dual<L>> { arr(|i| Dual::new(L::from(P[i]), L::from(v[i]))) };
+    let n_paths = 200_000;
+    let vec = |p: [f64; 5]| -> <M as McModel>::P<L> { Arr::from_fn(|i| L::from(p[i])) };
+    let dual = |v: [f64; 5]| -> <M as McModel>::P<Dual<L>> { Arr::from_fn(|i| Dual::new(L::from(P[i]), L::from(v[i]))) };
     let unit = |j: usize| -> [f64; 5] { std::array::from_fn(|i| if i == j { 1.0 } else { 0.0 }) };
     let mut b = [f64::INFINITY; 4];
     let mut chk = 0.0;
@@ -84,9 +76,9 @@ fn mc<L: Lanes>(z: &[f32]) {
 }
 
 fn fd<M: FdModel, L: Lanes>(nx: usize, nt: usize) {
-    let g = Grid::new(100f64.ln() - 1.2, 100f64.ln() + 1.2, nx, nt);
-    let vp = |q: [f64; 5]| -> M::P<L> { arr(|i| L::from(q[i])) };
-    let dp = |t: [f64; 5]| -> M::P<Dual<L>> { arr(|i| Dual::new(L::from(P[i]), L::from(t[i]))) };
+    let g = FdGrid::new(100f64.ln() - 1.2, 100f64.ln() + 1.2, nx, nt);
+    let vp = |q: [f64; 5]| -> M::P<L> { Arr::from_fn(|i| L::from(q[i])) };
+    let dp = |t: [f64; 5]| -> M::P<Dual<L>> { Arr::from_fn(|i| Dual::new(L::from(P[i]), L::from(t[i]))) };
     let v: [f64; 5] = std::array::from_fn(|j| 0.3 + 0.1 * j as f64);
     let s = |x: L| x.sum();
     let mut b = [f64::INFINITY; 5];

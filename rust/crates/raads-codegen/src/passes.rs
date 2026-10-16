@@ -109,13 +109,18 @@ pub fn residuals(g: &Graph, reads: &[bool]) -> Vec<usize> {
 
 /// All analyses of one graph.
 pub struct Analysis {
+    /// See [`need`].
     pub need: Vec<bool>,
+    /// See [`live`].
     pub live: Vec<bool>,
+    /// See [`reads`].
     pub reads: Vec<bool>,
+    /// See [`residuals`].
     pub res: Vec<usize>,
 }
 
 impl Analysis {
+    /// Run every pass.
     pub fn new(g: &Graph) -> Self {
         let need = need(g);
         let live = live(g);

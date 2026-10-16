@@ -452,11 +452,11 @@ impl Builder {
     /// for comparison with the tracer.
     pub fn graph_code(&self) -> TokenStream {
         let nodes = self.g.nodes.iter().enumerate().map(|(i, n)| {
-            let arg = |x: usize| if x == NONE { quote!(::raads::codegen::NONE) } else { quote!(#x) };
+            let arg = |x: usize| if x == NONE { quote!(::raads::__private::codegen::NONE) } else { quote!(#x) };
             let (a, b, c, d) = (arg(n.a), arg(n.b), arg(n.c), arg(n.d));
             let lit = |f: &F| {
                 let t = f.tokens();
-                quote!(::raads::codegen::f64_literal(#t))
+                quote!(::raads::__private::codegen::f64_literal(#t))
             };
             let op = match &n.op {
                 Op::Input(k) => quote!(Input(#k)),
@@ -467,7 +467,7 @@ impl Builder {
                 }
                 Op::Powk(s) => {
                     let t: TokenStream = s.parse().unwrap();
-                    let l = quote!(::raads::codegen::f64_literal(#t));
+                    let l = quote!(::raads::__private::codegen::f64_literal(#t));
                     quote!(Powk(#l))
                 }
                 Op::Add => quote!(Add),
@@ -482,11 +482,11 @@ impl Builder {
                 Op::SelGt => quote!(SelGt),
                 Op::Stop => quote!(Stop),
             };
-            quote!(g.push(::raads::codegen::Op::#op, #a, #b, #c, #d);)
+            quote!(g.push(::raads::__private::codegen::Op::#op, #a, #b, #c, #d);)
         });
         let outs = &self.g.outs;
         quote! {
-            let mut g = ::raads::codegen::Graph::default();
+            let mut g = ::raads::__private::codegen::Graph::default();
             #(#nodes)*
             g.outs = vec![#(#outs),*];
             g

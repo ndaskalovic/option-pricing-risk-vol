@@ -90,6 +90,8 @@ impl Div<f64> for Tracer {
     }
 }
 
+impl crate::sealed::Sealed for Tracer {}
+
 impl AdNum for Tracer {
     fn exp(self) -> Tracer {
         unary(Op::Exp, self)

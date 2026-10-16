@@ -3,7 +3,7 @@
 //! Every output is consumed.
 
 use raads::lanes::{F32x16, F32x32};
-use raads::{Arr, Lanes, McModel, Real, mc_greeks};
+use raads::{Arr, Lanes, McModel, mc_greeks, mc_price};
 use raads_models::gbm::{GbmAsianCall, GbmCall};
 use rand::SeedableRng;
 use rand::rngs::StdRng;
@@ -25,35 +25,10 @@ fn best_ms(mut f: impl FnMut() -> f64) -> (f64, f64) {
     (best, chk)
 }
 
-/// Pricing only, same kernels (no derivatives).
-fn price<M: McModel, R: Real>(p: &M::P<R>, n_paths: usize, z: &[f32]) -> f64 {
-    let w = R::Lanes::W;
-    let nz = <M::Z<R> as Arr<R>>::LEN;
-    let c = M::setup_eval(p, R::from(N_STEPS as f64));
-    let s0 = M::init_eval(p);
-    let mut acc = R::from(0.0);
-    for path in z.chunks_exact(N_STEPS * nz * w).take(n_paths) {
-        let mut s = s0;
-        for zk in path.chunks_exact(nz * w) {
-            let mut zz: M::Z<R> = Arr::splat(R::from(0.0));
-            for (j, x) in zz.as_mut().iter_mut().enumerate() {
-                *x = R::lift(R::Lanes::load_f32(&zk[j * w..]));
-            }
-            s = M::step_eval(&s, &c, &zz);
-        }
-        acc += M::payoff_eval(&s, p, &c);
-    }
-    acc.value().sum() / (n_paths * w) as f64
-}
-
-fn run<M: McModel, L: Lanes>(label: &str, n_paths_scalar: usize, z: &[f32]) {
+fn run<M: McModel, L: Lanes>(label: &str, n_paths: usize, z: &[f32]) {
     let w = L::W;
-    let n_paths = n_paths_scalar / w;
-    let mut p: M::P<L> = Arr::splat(L::from(0.0));
-    for (x, v) in p.as_mut().iter_mut().zip([100.0, 0.01, 0.2, 1.0, 100.0]) {
-        *x = L::from(v);
-    }
-    let (tp, _) = best_ms(|| price::<M, L>(black_box(&p), n_paths, z));
+    let p: M::P<L> = Arr::from_fn(|i| L::from([100.0, 0.01, 0.2, 1.0, 100.0][i]));
+    let (tp, _) = best_ms(|| mc_price::<M, L>(black_box(&p), N_STEPS, n_paths, z));
     let (tg, chk) = best_ms(|| {
         let r = mc_greeks::<M, L>(black_box(&p), N_STEPS, n_paths, z);
         r.price + r.grad.as_ref().iter().sum::<f64>()

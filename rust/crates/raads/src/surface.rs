@@ -22,9 +22,13 @@ use crate::{AdNum, Arr, Lanes, Real};
 
 /// Spatial grid and time stepping of a surface solve.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
 pub struct SurfaceGrid {
+    /// Lowest grid coordinate.
     pub x_lo: f64,
+    /// Highest grid coordinate.
     pub x_hi: f64,
+    /// Space nodes.
     pub nx: usize,
     /// Largest time step; each maturity segment gets equal steps no longer than this.
     pub dt: f64,
@@ -73,26 +77,45 @@ fn schedule(maturities: &[f64], dt_target: f64, rannacher: usize) -> Vec<Block> 
     bl
 }
 
-/// A weighted read of the surface: maturity index `m`, grid coordinate `x` and weight `w` per lane.
+/// A weighted read of the surface, per lane.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SurfacePoint<L> {
-    pub m: usize,
+    /// Maturity index.
+    pub maturity: usize,
+    /// Grid coordinate.
     pub x: L,
-    pub w: L,
+    /// Weight in the book.
+    pub weight: L,
 }
 
 /// `u(x, T_m)` and `u_τ(x, T_m)` on the grid for every maturity `m`.
 #[derive(Clone, Debug)]
+#[must_use]
 pub struct FdSurface<R> {
-    pub x_lo: f64,
-    pub h: f64,
-    pub nx: usize,
+    x_lo: f64,
+    h: f64,
+    nx: usize,
     slices: Vec<R>,
     /// `u_τ = a u_xx + b u_x - c u` (discrete `L u`); 0 on exercised nodes.
     taus: Vec<R>,
 }
 
 impl<R: Real> FdSurface<R> {
+    /// Lowest grid coordinate.
+    pub fn x_lo(&self) -> f64 {
+        self.x_lo
+    }
+
+    /// Node spacing.
+    pub fn h(&self) -> f64 {
+        self.h
+    }
+
+    /// Space nodes.
+    pub fn nx(&self) -> usize {
+        self.nx
+    }
+
     /// Nearest interior node per lane (at least two nodes from either end) and the offset
     /// `t = (x - x_j) / h`.
     fn weights(&self, x: R::Lanes) -> (Vec<usize>, R::Lanes) {
@@ -143,7 +166,7 @@ impl<R: Real> FdSurface<R> {
 }
 
 /// Forward solve saving every maturity; with `GRADS`, also the reverse sweep of
-/// `Σ_k w_k u(x_k, T_{m_k})` into `a_p`.
+/// `Σ_k weight_k u(x_k, T_{maturity_k})` into `a_p`.
 fn surface_core<M: FdModel, R: Real, const GRADS: bool>(
     p: &M::P<R>,
     g: &SurfaceGrid,
@@ -154,7 +177,7 @@ fn surface_core<M: FdModel, R: Real, const GRADS: bool>(
     let nx = g.nx;
     assert!(nx >= 5, "need at least 5 grid nodes");
     assert!(!maturities.is_empty(), "need at least 1 maturity");
-    assert!(points.iter().all(|pt| pt.m < maturities.len()), "SurfacePoint::m out of range");
+    assert!(points.iter().all(|pt| pt.maturity < maturities.len()), "SurfacePoint::maturity out of range");
     let mut sc = Scheme::<M, R>::new(p, g.x_lo, g.x_hi, nx, GRADS);
     let bl = schedule(maturities, g.dt, g.rannacher);
     let last = bl[bl.len() - 1];
@@ -201,9 +224,9 @@ fn surface_core<M: FdModel, R: Real, const GRADS: bool>(
             }
             // seed the book's reads of this maturity (aV is the adjoint of V at the block's last level)
             if let Some(m) = b.mat {
-                for pt in points.iter().filter(|pt| pt.m == m) {
+                for pt in points.iter().filter(|pt| pt.maturity == m) {
                     let (j, t) = surf.weights(pt.x);
-                    let w = [t * (t - 1.0) * 0.5 * pt.w, (t * t).rsub(1.0) * pt.w, t * (t + 1.0) * 0.5 * pt.w];
+                    let w = [t * (t - 1.0) * 0.5 * pt.weight, (t * t).rsub(1.0) * pt.weight, t * (t + 1.0) * 0.5 * pt.weight];
                     for (lane, &jl) in j.iter().enumerate() {
                         for (k, wk) in w.iter().enumerate() {
                             let node = jl + k - 1;
@@ -237,21 +260,24 @@ pub fn fd_surface<M: FdModel, R: Real>(params: &M::P<R>, grid: &SurfaceGrid, mat
 
 /// A book of surface reads and its gradient.
 #[derive(Clone, Debug)]
+#[non_exhaustive]
+#[must_use]
 pub struct FdBook<R, G> {
-    /// `Σ_k w_k u(x_k, T_{m_k})`, per lane.
+    /// `Σ_k weight_k u(x_k, T_{maturity_k})`, per lane.
     pub value: R,
     /// d value / d params, per lane.
     pub grad: G,
+    /// The solution the book reads.
     pub surface: FdSurface<R>,
 }
 
-/// A book of surface reads `Σ_k w_k u(x_k, T_{m_k})` and its gradient w.r.t. every model
-/// parameter in one reverse sweep (per lane). For a unit-strike model `w_k = position_k · K_k`.
+/// A book of surface reads `Σ_k weight_k u(x_k, T_{maturity_k})` and its gradient w.r.t. every model
+/// parameter in one reverse sweep (per lane). For a unit-strike model `weight_k = position_k · K_k`.
 /// With [`Dual`](crate::Dual) the gradient tangents are Hessian-vector products of the book.
 ///
 /// # Panics
 ///
-/// As [`fd_surface`], or if a point's maturity index `m` is out of range.
+/// As [`fd_surface`], or if a point's maturity index is out of range.
 pub fn fd_surface_book<M: FdModel, R: Real>(
     params: &M::P<R>,
     grid: &SurfaceGrid,
@@ -260,6 +286,6 @@ pub fn fd_surface_book<M: FdModel, R: Real>(
 ) -> FdBook<R, M::P<R>> {
     let mut grad: M::P<R> = Arr::splat(R::from(0.0));
     let surface = surface_core::<M, R, true>(params, grid, maturities, points, &mut grad);
-    let value = points.iter().fold(R::from(0.0), |v, pt| v + R::lift(pt.w) * surface.read(pt.m, pt.x)[0]);
+    let value = points.iter().fold(R::from(0.0), |v, pt| v + R::lift(pt.weight) * surface.read(pt.maturity, pt.x)[0]);
     FdBook { value, grad, surface }
 }

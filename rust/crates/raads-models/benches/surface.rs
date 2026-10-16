@@ -163,7 +163,7 @@ fn run_book(mk: &Market, h: f64, dt: f64) -> f64 {
             for j in 0..NK {
                 let k: L = mk.strikes(und, j);
                 let w = L::from_fn(|l| mk.pos[und[l] * NM * NK + m * NK + j]) * k;
-                pts.push(SurfacePoint { m, x: (spot / k).ln(), w });
+                pts.push(SurfacePoint { maturity: m, x: (spot / k).ln(), weight: w });
             }
         }
         let bk = fd_surface_book::<M, L>(&p, &mk.grid(und, h, dt), &mk.t, &pts);

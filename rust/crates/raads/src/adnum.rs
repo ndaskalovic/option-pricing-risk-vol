@@ -2,14 +2,19 @@
 //!
 //! Kernels are written once, generic over `N: AdNum`. `#[kernel]` turns them into
 //! straight-line forward and reverse code; the same source also runs eagerly on any
-//! [`Real`](crate::Real) (`f64`, SIMD packs, [`Dual`](crate::Dual)) and on the
-//! [`Tracer`](crate::trace::Tracer). Comparisons exist only through [`AdNum::select_gt`],
+//! [`Real`](crate::Real) (`f64`, SIMD packs, [`Dual`](crate::Dual)) and on the graph
+//! tracer used to test the macro. Comparisons exist only through [`AdNum::select_gt`],
 //! so a kernel is branch-free on differentiable values and its graph never changes.
 
 use std::ops::{Add, Div, Mul, Neg, Sub};
 
+/// A differentiable number: the operations a kernel may use.
+///
+/// Sealed: implemented by `f64`, the SIMD packs and [`Dual`](crate::Dual) (and the tracer),
+/// so new operations can be added without breaking user code.
 pub trait AdNum:
-    Copy
+    crate::sealed::Sealed
+    + Copy
     + From<f64>
     + Add<Output = Self>
     + Sub<Output = Self>
@@ -21,8 +26,11 @@ pub trait AdNum:
     + Mul<f64, Output = Self>
     + Div<f64, Output = Self>
 {
+    /// `e^self`
     fn exp(self) -> Self;
+    /// Natural logarithm.
     fn ln(self) -> Self;
+    /// Square root.
     fn sqrt(self) -> Self;
     /// `self ** k`
     fn powf(self, k: f64) -> Self;
@@ -47,10 +55,12 @@ pub trait AdNum:
         self * k
     }
 
+    /// `max(self, b)` via [`select_gt`](AdNum::select_gt).
     #[inline(always)]
     fn maximum(self, b: Self) -> Self {
         Self::select_gt(self, b, self, b)
     }
+    /// `min(self, b)` via [`select_gt`](AdNum::select_gt).
     #[inline(always)]
     fn minimum(self, b: Self) -> Self {
         Self::select_gt(self, b, b, self)

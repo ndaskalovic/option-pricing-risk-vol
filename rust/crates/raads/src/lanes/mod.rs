@@ -2,25 +2,42 @@
 //!
 //! Each instruction set has its own implementation behind [`Lanes`]: NEON on aarch64,
 //! with AVX2/AVX-512 on x86_64 and plain `f64` for one lane. Engines and generated
-//! kernels are written against [`Real`](crate::Real), so the same source compiles to each.
+//! kernels are written against [`Real`], so the same source compiles to each.
+//! The packs are named by the aliases below (`F32x4` … `F64x16`) and `f64`.
 
 use crate::Real;
 use std::fmt::Debug;
 
 mod scalar;
 
-pub mod portable;
+// the fallback backend, unused on targets with a SIMD backend except in tests
+#[allow(dead_code)]
+mod portable;
 
 #[cfg(target_arch = "aarch64")]
-pub mod neon;
+mod neon;
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx2", target_feature = "fma"))]
-pub mod avx2;
+mod avx2;
 
 #[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
-pub mod avx512;
+mod avx512;
+
+macro_rules! seal {
+    ($($m:ident::$T:ident),*) => {
+        $(impl<const R: usize> crate::sealed::Sealed for $m::$T<R> {})*
+    };
+}
+seal!(portable::F32, portable::F64);
+#[cfg(target_arch = "aarch64")]
+seal!(neon::F32, neon::F64);
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2", target_feature = "fma"))]
+seal!(avx2::F32, avx2::F64, avx2::F32h, avx2::F64h);
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+seal!(avx512::F32, avx512::F64);
 
 /// A pack of `W` floats. Also a first-order [`Real`] (its own value, zero tangent).
+/// Sealed through [`AdNum`](crate::AdNum).
 pub trait Lanes: Real<Lanes = Self> + Debug + PartialEq {
     /// `f32` or `f64`.
     type Elem: Copy + Debug + Default + PartialEq + Into<f64>;
@@ -135,21 +152,29 @@ pub(crate) mod exp_poly {
     }
 }
 
-/// Packs by precision and width for the target being compiled, chosen by the enabled target
-/// features (no runtime dispatch): NEON on aarch64; on x86_64 AVX-512 (`avx512f`), else AVX2
-/// (`avx2` + `fma`), else [`portable`]; [`portable`] on other targets. Packs narrower than a
-/// register use the 128-bit (AVX2) or 256-bit (AVX-512) packs, so every alias is one or more
-/// whole registers.
+// Packs by precision and width for the target being compiled, chosen by the enabled target
+// features (no runtime dispatch): NEON on aarch64; on x86_64 AVX-512 (`avx512f`), else AVX2
+// (`avx2` + `fma`), else plain arrays (`portable`); `portable` on other targets. Packs narrower
+// than a register use the 128-bit (AVX2) or 256-bit (AVX-512) packs, so every alias is one or
+// more whole registers.
 #[cfg(target_arch = "aarch64")]
 mod aliases {
     use super::neon::{F32, F64};
+    /// 4 lanes of `f32`.
     pub type F32x4 = F32<1>;
+    /// 8 lanes of `f32`.
     pub type F32x8 = F32<2>;
+    /// 16 lanes of `f32`.
     pub type F32x16 = F32<4>;
+    /// 32 lanes of `f32`.
     pub type F32x32 = F32<8>;
+    /// 2 lanes of `f64`.
     pub type F64x2 = F64<1>;
+    /// 4 lanes of `f64`.
     pub type F64x4 = F64<2>;
+    /// 8 lanes of `f64`.
     pub type F64x8 = F64<4>;
+    /// 16 lanes of `f64`.
     pub type F64x16 = F64<8>;
 }
 
@@ -157,13 +182,21 @@ mod aliases {
 mod aliases {
     use super::avx2::{F32, F32h, F64, F64h};
     use super::avx512::{F32 as F32z, F64 as F64z};
+    /// 4 lanes of `f32`.
     pub type F32x4 = F32h<1>;
+    /// 8 lanes of `f32`.
     pub type F32x8 = F32<1>;
+    /// 16 lanes of `f32`.
     pub type F32x16 = F32z<1>;
+    /// 32 lanes of `f32`.
     pub type F32x32 = F32z<2>;
+    /// 2 lanes of `f64`.
     pub type F64x2 = F64h<1>;
+    /// 4 lanes of `f64`.
     pub type F64x4 = F64<1>;
+    /// 8 lanes of `f64`.
     pub type F64x8 = F64z<1>;
+    /// 16 lanes of `f64`.
     pub type F64x16 = F64z<2>;
 }
 
@@ -175,13 +208,21 @@ mod aliases {
 ))]
 mod aliases {
     use super::avx2::{F32, F32h, F64, F64h};
+    /// 4 lanes of `f32`.
     pub type F32x4 = F32h<1>;
+    /// 8 lanes of `f32`.
     pub type F32x8 = F32<1>;
+    /// 16 lanes of `f32`.
     pub type F32x16 = F32<2>;
+    /// 32 lanes of `f32`.
     pub type F32x32 = F32<4>;
+    /// 2 lanes of `f64`.
     pub type F64x2 = F64h<1>;
+    /// 4 lanes of `f64`.
     pub type F64x4 = F64<1>;
+    /// 8 lanes of `f64`.
     pub type F64x8 = F64<2>;
+    /// 16 lanes of `f64`.
     pub type F64x16 = F64<4>;
 }
 
@@ -192,13 +233,21 @@ mod aliases {
 )))]
 mod aliases {
     use super::portable::{F32, F64};
+    /// 4 lanes of `f32`.
     pub type F32x4 = F32<4>;
+    /// 8 lanes of `f32`.
     pub type F32x8 = F32<8>;
+    /// 16 lanes of `f32`.
     pub type F32x16 = F32<16>;
+    /// 32 lanes of `f32`.
     pub type F32x32 = F32<32>;
+    /// 2 lanes of `f64`.
     pub type F64x2 = F64<2>;
+    /// 4 lanes of `f64`.
     pub type F64x4 = F64<4>;
+    /// 8 lanes of `f64`.
     pub type F64x8 = F64<8>;
+    /// 16 lanes of `f64`.
     pub type F64x16 = F64<16>;
 }
 

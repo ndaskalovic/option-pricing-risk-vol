@@ -8,7 +8,7 @@
 //! 6. the macro's graph == the tracer's graph; node and residual counts == Mojo's
 
 use raads::lanes::F64x4;
-use raads::trace::{Tracer, trace};
+use raads::__private::{Tracer, trace};
 use raads::{AdNum, Dual, Lanes, kernel};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};

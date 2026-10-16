@@ -1,7 +1,6 @@
 //! Helpers shared by the integration tests (each test crate uses a subset).
 #![allow(dead_code)]
 
-use raads::Arr;
 use rand::SeedableRng;
 use rand::rngs::StdRng;
 use rand_distr::{Distribution, StandardNormal};
@@ -10,15 +9,6 @@ use rand_distr::{Distribution, StandardNormal};
 pub fn normals(n: usize, seed: u64) -> Vec<f32> {
     let mut rng = StdRng::seed_from_u64(seed);
     (0..n).map(|_| StandardNormal.sample(&mut rng)).collect()
-}
-
-/// Array with element `i` = `f(i)`.
-pub fn arr<A: Arr<T>, T: Copy>(f: impl Fn(usize) -> T) -> A {
-    let mut a = A::splat(f(0));
-    for (i, x) in a.as_mut().iter_mut().enumerate() {
-        *x = f(i);
-    }
-    a
 }
 
 /// `|a - b| / max(|b|, 1e-9)`.

@@ -18,7 +18,9 @@ use std::fmt::Write;
 /// One parameter of the kernel: `name: R` (len `None`) or `name: &[R; len]`.
 #[derive(Clone, Debug)]
 pub struct Group {
+    /// Parameter name.
     pub name: String,
+    /// Array length, `None` for a scalar.
     pub len: Option<usize>,
     /// Non-differentiable (no adjoint argument).
     pub data: bool,
@@ -27,7 +29,9 @@ pub struct Group {
 /// Parameter groups in signature order and the output shape (`None`: a single `R`).
 #[derive(Clone, Debug)]
 pub struct Signature {
+    /// Parameters.
     pub groups: Vec<Group>,
+    /// Output array length, `None` for a scalar.
     pub out: Option<usize>,
 }
 
@@ -82,9 +86,13 @@ impl Signature {
 /// Which of the four functions to emit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Kind {
+    /// Primal only.
     Eval,
+    /// Primal and reverse sweep.
     Vjp,
+    /// Primal, saving residuals.
     Fwd,
+    /// Reverse sweep from residuals.
     Bwd,
 }
 

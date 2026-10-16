@@ -9,7 +9,7 @@
 //! (NZ = 2, saved residuals) vs a scalar reference, and the argument checks.
 
 use raads::lanes::{F32x8, F64x4, F64x8};
-use raads::{AdNum, Dual, McModel, mc_greeks, mc_model};
+use raads::{AdNum, Arr, Dual, McModel, mc_greeks, mc_model, mc_price};
 use raads_models::gbm::{GbmAsianCall, GbmCall};
 use raads_models::svi::SviCall;
 
@@ -20,14 +20,10 @@ type V = F64x8;
 type D = Dual<V>;
 const W: usize = 8;
 const N_STEPS: usize = 52;
-const N_PATHS: usize = 200_000 / W;
+const N_PATHS: usize = 200_000;
 
 fn vec_params<M: McModel>(p: &[f64]) -> M::P<V> {
-    let mut r: M::P<V> = raads::Arr::splat(V::from(0.0));
-    for (x, &v) in r.as_mut().iter_mut().zip(p) {
-        *x = V::from(v);
-    }
-    r
+    Arr::from_fn(|i| V::from(p[i]))
 }
 
 /// `detached`: a parameter the model passes through `detach` (stop-gradient); its AD
@@ -37,13 +33,9 @@ fn verify<M: McModel>(c: &mut Checks, label: &str, p: &[f64], n_paths: usize, z:
     let r = mc_greeks::<M, V>(&vec_params::<M>(p), N_STEPS, n_paths, z);
     println!("    price {} grad {:?}", r.price, r.grad.as_ref());
     // 1. dot test
-    let mut pd: M::P<D> = raads::Arr::splat(D::from(0.0));
-    let mut gv = 0.0;
-    for (j, x) in pd.as_mut().iter_mut().enumerate() {
-        let v = 0.3 + 0.1 * j as f64;
-        *x = D::new(V::from(p[j]), V::from(v));
-        gv += r.grad.as_ref()[j] * v;
-    }
+    let v = |j: usize| 0.3 + 0.1 * j as f64;
+    let pd: M::P<D> = Arr::from_fn(|j| D::new(V::from(p[j]), V::from(v(j))));
+    let gv: f64 = r.grad.as_ref().iter().enumerate().map(|(j, g)| g * v(j)).sum();
     let d = mc_greeks::<M, D>(&pd, N_STEPS, n_paths, z);
     c.le(&format!("{label}: dot test (Dual price tangent vs grad . v)"), (d.price_tangent - gv).abs() / gv.abs(), 1e-12);
     // 2. central differences (same normals)
@@ -65,7 +57,7 @@ fn verify<M: McModel>(c: &mut Checks, label: &str, p: &[f64], n_paths: usize, z:
 
 #[test]
 fn mc_engine() {
-    let z = normals(N_PATHS * N_STEPS * W, 42);
+    let z = normals(N_PATHS * N_STEPS, 42);
     let mut c = Checks::default();
     let p = [100.0, 0.01, 0.2, 1.0, 100.0];
     verify::<GbmCall>(&mut c, "GBM call (s0, r, sigma, T, K)", &p, N_PATHS, &z, None);
@@ -82,23 +74,24 @@ fn mc_engine() {
     for i in 0..6 {
         c.abs(&format!("price / Greek {i}"), ours[i], bs[i], tol[i]);
     }
+    c.le("|price - Black-Scholes| / std_err", (call.price - bs[0]).abs() / call.std_err, 4.0);
     c.assert_ok();
 }
 
 /// f32 lanes over 400k paths: the engine's sums over paths must not drift (they used to: rho
 /// biased by -1.5e-4 relative here, -2.5e-3 at 1.6M paths). Reference: the same f32 path
-/// arithmetic in batches of 8 path blocks, averaged in f64. Against f64 lanes the difference is
+/// arithmetic in batches of 64 paths, averaged in f64. Against f64 lanes the difference is
 /// the model's own f32 rounding (the constant drift added to log S every step: ~5e-5).
 #[test]
 fn mc_f32_accumulation() {
-    let n_paths = 400_000 / W;
-    let z = normals(n_paths * N_STEPS * W, 1);
+    let n_paths = 400_000;
+    let z = normals(n_paths * N_STEPS, 1);
     let p = [100.0, 0.01, 0.2, 1.0, 100.0];
     let p32 = p.map(F32x8::from);
     let r32 = mc_greeks::<GbmCall, F32x8>(&p32, N_STEPS, n_paths, &z);
-    let batch = 8;
+    let batch = 64;
     let (mut price, mut grad) = (0.0, [0.0; 5]);
-    for zb in z.chunks(batch * N_STEPS * W) {
+    for zb in z.chunks(batch * N_STEPS) {
         let r = mc_greeks::<GbmCall, F32x8>(&p32, N_STEPS, batch, zb);
         price += r.price;
         for (g, rg) in grad.iter_mut().zip(r.grad) {
@@ -138,34 +131,42 @@ impl TwoFactor {
     }
 }
 
-/// `TwoFactor` path by path in plain f64, on the engine's normals layout.
-fn two_factor_scalar(p: [f64; 4], n_steps: usize, z: &[f32], w: usize, n_paths: usize) -> f64 {
+/// `TwoFactor` payoffs path by path in plain f64, on the engine's normals layout for `w` lanes.
+fn two_factor_payoffs(p: [f64; 4], n_steps: usize, z: &[f32], w: usize, n_paths: usize) -> Vec<f64> {
     let dt = p[3] / n_steps as f64;
     let (c0, c1) = (p[1] * dt.sqrt(), p[2] * dt.sqrt());
-    let mut sum = 0.0;
-    for path in z.chunks_exact(n_steps * 2 * w).take(n_paths) {
+    let mut v = Vec::with_capacity(n_paths);
+    for path in z.chunks_exact(n_steps * 2 * w).take(n_paths / w) {
         for lane in 0..w {
             let (mut x, mut y) = (p[0], 0.0);
             for zk in path.chunks_exact(2 * w) {
                 y = y * 0.9 + c1 * zk[w + lane] as f64;
                 x *= (c0 * zk[lane] as f64 + y * dt).exp();
             }
-            sum += (x - 1.0).max(0.0) + y * y * p[0];
+            v.push((x - 1.0).max(0.0) + y * y * p[0]);
         }
     }
-    sum / (n_paths * w) as f64
+    v
+}
+
+fn two_factor_scalar(p: [f64; 4], n_steps: usize, z: &[f32], w: usize, n_paths: usize) -> f64 {
+    two_factor_payoffs(p, n_steps, z, w, n_paths).iter().sum::<f64>() / n_paths as f64
 }
 
 #[test]
 fn mc_two_factor() {
     type V4 = F64x4;
-    let (n_steps, n_paths, w) = (12, 500, 4);
-    let z = normals(n_paths * n_steps * 2 * w, 5);
+    let (n_steps, n_paths, w) = (12, 2000, 4);
+    let z = normals(n_paths * n_steps * 2, 5);
     let p = [1.0, 0.3, 0.5, 2.0];
     const { assert!(<TwoFactor as McModel>::STEP_NRES > 0) };
     let r = mc_greeks::<TwoFactor, V4>(&p.map(V4::from), n_steps, n_paths, &z);
     let mut c = Checks::default();
-    c.rel("price vs scalar", r.price, two_factor_scalar(p, n_steps, &z, w, n_paths), 1e-12);
+    let v = two_factor_payoffs(p, n_steps, &z, w, n_paths);
+    let mean = v.iter().sum::<f64>() / n_paths as f64;
+    let var = v.iter().map(|x| (x - mean) * (x - mean)).sum::<f64>() / (n_paths - 1) as f64;
+    c.rel("price vs scalar", r.price, mean, 1e-12);
+    c.rel("std_err vs scalar", r.std_err, (var / n_paths as f64).sqrt(), 1e-9);
     for j in 0..4 {
         let h = 1e-6 * p[j];
         let (mut a, mut b) = (p, p);
@@ -184,17 +185,32 @@ fn mc_two_factor() {
 #[test]
 #[should_panic(expected = "need n_steps, n_paths and NZ >= 1")]
 fn mc_zero_steps() {
-    mc_greeks::<GbmCall, V>(&[100.0, 0.01, 0.2, 1.0, 100.0].map(V::from), 0, 1, &[]);
+    let _ = mc_greeks::<GbmCall, V>(&[100.0, 0.01, 0.2, 1.0, 100.0].map(V::from), 0, 1, &[]);
 }
 
 #[test]
 #[should_panic(expected = "need n_steps, n_paths and NZ >= 1")]
 fn mc_zero_paths() {
-    mc_greeks::<GbmCall, V>(&[100.0, 0.01, 0.2, 1.0, 100.0].map(V::from), 52, 0, &[]);
+    let _ = mc_greeks::<GbmCall, V>(&[100.0, 0.01, 0.2, 1.0, 100.0].map(V::from), 52, 0, &[]);
 }
 
 #[test]
-#[should_panic(expected = "need n_paths * n_steps * NZ * W normals")]
+#[should_panic(expected = "n_paths = 12 must be a multiple of the lane count W = 8")]
+fn mc_partial_block() {
+    let _ = mc_greeks::<GbmCall, V>(&[100.0, 0.01, 0.2, 1.0, 100.0].map(V::from), 52, 12, &[0.0; 52 * 16]);
+}
+
+#[test]
+#[should_panic(expected = "need n_paths * n_steps * NZ normals")]
 fn mc_short_normals() {
-    mc_greeks::<GbmCall, V>(&[100.0, 0.01, 0.2, 1.0, 100.0].map(V::from), 52, 2, &[0.0; 52 * W]);
+    let _ = mc_greeks::<GbmCall, V>(&[100.0, 0.01, 0.2, 1.0, 100.0].map(V::from), 52, 2 * W, &[0.0; 52 * W]);
+}
+
+#[test]
+fn mc_price_matches_greeks() {
+    let z = normals(4096 * 12, 3);
+    let p = [100.0, 0.01, 0.2, 1.0, 100.0].map(V::from);
+    let r = mc_greeks::<GbmAsianCall, V>(&p, 12, 4096, &z);
+    let price = mc_price::<GbmAsianCall, V>(&p, 12, 4096, &z);
+    assert!((price - r.price).abs() <= 1e-12 * r.price, "{price} vs {}", r.price);
 }

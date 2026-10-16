@@ -3,7 +3,7 @@
 //! Every output is consumed.
 
 use raads::lanes::{F32x8, F64x4};
-use raads::{Grid, Lanes, Real, fd_greeks, fd_price};
+use raads::{FdGrid, Lanes, Real, fd_greeks, fd_price};
 use raads_models::bs_fd::BsAmericanPut;
 use std::hint::black_box;
 use std::time::Instant;
@@ -24,7 +24,7 @@ fn run<R: Real>(label: &str, nx: usize, nt: usize) {
     let strikes = [90.0, 100.0, 110.0, 120.0, 95.0, 105.0, 115.0, 125.0];
     let mut p = [100.0, 0.01, 0.2, 1.0, 100.0].map(R::from);
     p[4] = R::lift(R::Lanes::from_fn(|l| strikes[l % 8]));
-    let g = Grid::new(100f64.ln() - 1.2, 100f64.ln() + 1.2, nx, nt);
+    let g = FdGrid::new(100f64.ln() - 1.2, 100f64.ln() + 1.2, nx, nt);
     let sum = |v: R| v.value().sum();
     let tp = best_ms(31, || sum(fd_price::<BsAmericanPut, R>(black_box(&p), &g)));
     let tg = best_ms(31, || {

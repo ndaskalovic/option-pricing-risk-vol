@@ -8,7 +8,7 @@
 //! Rannacher count and one or several maturities; the argument checks.
 
 use raads::lanes::{F64x2, F64x4};
-use raads::{Dual, FdSurface, Grid, Lanes, SurfaceGrid, SurfacePoint, fd_price, fd_surface, fd_surface_book};
+use raads::{Dual, FdGrid, FdSurface, Lanes, SurfaceGrid, SurfacePoint, fd_price, fd_surface, fd_surface_book};
 use raads_models::bs_fd::{BsAmericanPut, BsPutMoneyness};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
@@ -129,7 +129,7 @@ fn fd_surface_engine() {
     let mut pts = Vec::new();
     for m in 0..T.len() {
         for (ki, &k) in ks.iter().enumerate() {
-            pts.push(SurfacePoint { m, x: (S0 / k).ln(), w: pos[m * ks.len() + ki] * k });
+            pts.push(SurfacePoint { maturity: m, x: (S0 / k).ln(), weight: pos[m * ks.len() + ki] * k });
         }
     }
     let book = fd_surface_book::<BsPutMoneyness<true>, f64>(&[R_, Q_, SIG], &g2, &T, &pts);
@@ -161,7 +161,7 @@ fn fd_surface_engine() {
     for (m, &t) in T.iter().enumerate() {
         for k in [80.0, 100.0, 120.0] {
             let z = 5.0 * SIG * t.sqrt();
-            let g = Grid::new(S0.ln() - 0.5 - z, S0.ln() + 0.5 + z, 801, 800);
+            let g = FdGrid::new(S0.ln() - 0.5 - z, S0.ln() + 0.5 + z, 801, 800);
             let single = fd_price::<BsAmericanPut, f64>(&[S0, R_, SIG, t, k], &g);
             e4 = e4.max((s0.option(m, S0, k)[0] - single).abs());
         }
@@ -173,14 +173,15 @@ fn fd_surface_engine() {
 /// Book gradient (reverse) vs forward Dual tangents: W = 2 lanes with different reads and
 /// weights, for a Rannacher count and maturity list. Max relative error.
 fn book_vs_tangents<const AM: bool>(rannacher: usize, mats: &[f64]) -> f64 {
-    let g = SurfaceGrid { x_lo: -1.5, x_hi: 1.5, nx: 241, dt: 1.0 / 200.0, rannacher };
+    let mut g = SurfaceGrid::new(-1.5, 1.5, 241, 1.0 / 200.0);
+    g.rannacher = rannacher;
     let p = [R_, Q_, SIG];
     let mut rng = StdRng::seed_from_u64(11);
     let pts: Vec<SurfacePoint<F64x2>> = (0..5 * mats.len())
         .map(|k| SurfacePoint {
-            m: k % mats.len(),
+            maturity: k % mats.len(),
             x: F64x2::from_fn(|_| rng.random_range(-0.4..0.4)),
-            w: F64x2::from_fn(|_| rng.random_range(-5.0..5.0)),
+            weight: F64x2::from_fn(|_| rng.random_range(-5.0..5.0)),
         })
         .collect();
     let book = fd_surface_book::<BsPutMoneyness<AM>, F64x2>(&p.map(F64x2::from), &g, mats, &pts);
@@ -188,7 +189,7 @@ fn book_vs_tangents<const AM: bool>(rannacher: usize, mats: &[f64]) -> f64 {
     for j in 0..3 {
         let pd: [D2; 3] = std::array::from_fn(|i| D2::new(F64x2::from(p[i]), F64x2::from(if i == j { 1.0 } else { 0.0 })));
         let s = fd_surface::<BsPutMoneyness<AM>, D2>(&pd, &g, mats);
-        let fwd = pts.iter().fold(F64x2::from(0.0), |f, pt| f + pt.w * s.read(pt.m, pt.x)[0].t);
+        let fwd = pts.iter().fold(F64x2::from(0.0), |f, pt| f + pt.weight * s.read(pt.maturity, pt.x)[0].t);
         for l in 0..2 {
             e = e.max(rel(book.grad[j].lane(l), fwd.lane(l)));
         }
@@ -210,7 +211,9 @@ fn book_lanes_rannacher_maturities() {
 }
 
 fn small_grid(nx: usize) -> SurfaceGrid {
-    SurfaceGrid { x_lo: -1.0, x_hi: 1.0, nx, dt: 0.1, rannacher: 0 }
+    let mut g = SurfaceGrid::new(-1.0, 1.0, nx, 0.1);
+    g.rannacher = 0;
+    g
 }
 
 #[test]
@@ -222,18 +225,18 @@ fn surface_five_nodes() {
 #[test]
 #[should_panic(expected = "need at least 5 grid nodes")]
 fn surface_four_nodes() {
-    fd_surface::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &small_grid(4), &[0.5]);
+    let _ = fd_surface::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &small_grid(4), &[0.5]);
 }
 
 #[test]
 #[should_panic(expected = "need at least 1 maturity")]
 fn surface_no_maturities() {
-    fd_surface::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &grid(0.01, 0.01), &[]);
+    let _ = fd_surface::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &grid(0.01, 0.01), &[]);
 }
 
 #[test]
-#[should_panic(expected = "SurfacePoint::m out of range")]
+#[should_panic(expected = "SurfacePoint::maturity out of range")]
 fn book_maturity_out_of_range() {
-    let pts = [SurfacePoint { m: 1, x: 0.0, w: 1.0 }];
-    fd_surface_book::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &grid(0.01, 0.01), &[0.5], &pts);
+    let pts = [SurfacePoint { maturity: 1, x: 0.0, weight: 1.0 }];
+    let _ = fd_surface_book::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &grid(0.01, 0.01), &[0.5], &pts);
 }

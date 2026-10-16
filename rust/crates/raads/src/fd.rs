@@ -23,7 +23,11 @@ use crate::{Arr, Lanes, Real};
 use std::marker::PhantomData;
 
 /// A model compiled by [`#[fd_model]`](crate::fd_model). `P` holds the parameters.
+///
+/// Generated `*_eval` functions compute a kernel; `*_vjp` add the adjoints of its inputs
+/// (seeded with `a_y`) into `a_p` and return the adjoint of the data input `x` (if any).
 pub trait FdModel {
+    /// Parameters.
     type P<T: Copy>: Arr<T>;
     /// Early exercise: `V = max(V, payoff)` after every step.
     const AMERICAN: bool = false;
@@ -32,38 +36,56 @@ pub trait FdModel {
     /// second-order Greeks need `EXERCISE_EPS > 0`; first order does not.
     const EXERCISE_EPS: f64 = 0.0;
 
+    /// `coeffs` kernel: `[a, b, c]` at log-spot `x`.
     fn coeffs_eval<R: Real>(x: R, p: &Self::P<R>) -> [R; 3];
+    /// `coeffs` reverse.
     fn coeffs_vjp<R: Real>(x: R, p: &Self::P<R>, a_y: &[R; 3], a_p: &mut Self::P<R>) -> [R; 3];
+    /// `payoff` kernel.
     fn payoff_eval<R: Real>(x: R, p: &Self::P<R>) -> R;
+    /// `payoff` reverse.
     fn payoff_vjp<R: Real>(x: R, p: &Self::P<R>, a_y: R, a_p: &mut Self::P<R>) -> R;
+    /// `spot` kernel (log-spot).
     fn spot_eval<R: Real>(p: &Self::P<R>) -> R;
+    /// `spot` reverse.
     fn spot_vjp<R: Real>(p: &Self::P<R>, a_y: R, a_p: &mut Self::P<R>) -> R;
+    /// `maturity` kernel.
     fn maturity_eval<R: Real>(p: &Self::P<R>) -> R;
+    /// `maturity` reverse.
     fn maturity_vjp<R: Real>(p: &Self::P<R>, a_y: R, a_p: &mut Self::P<R>) -> R;
 }
 
 /// Uniform grid on `[x_lo, x_hi]` with `nx` nodes, `nt` time steps, theta scheme
 /// (`theta = 0.5`: Crank–Nicolson).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Grid {
+#[non_exhaustive]
+pub struct FdGrid {
+    /// Lowest log-spot.
     pub x_lo: f64,
+    /// Highest log-spot.
     pub x_hi: f64,
+    /// Space nodes.
     pub nx: usize,
+    /// Time steps.
     pub nt: usize,
+    /// Implicitness: 0.5 Crank–Nicolson, 1 fully implicit.
     pub theta: f64,
 }
 
-impl Grid {
+impl FdGrid {
     /// Crank–Nicolson grid.
     pub fn new(x_lo: f64, x_hi: f64, nx: usize, nt: usize) -> Self {
-        Grid { x_lo, x_hi, nx, nt, theta: 0.5 }
+        FdGrid { x_lo, x_hi, nx, nt, theta: 0.5 }
     }
 }
 
 /// Price and gradient per lane.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[non_exhaustive]
+#[must_use]
 pub struct FdResult<R, G> {
+    /// Price.
     pub price: R,
+    /// d price / d params.
     pub grad: G,
 }
 
@@ -330,7 +352,7 @@ impl<M: FdModel, R: Real> Scheme<M, R> {
 }
 
 /// `nt` equal steps to the model's maturity, price interpolated at the model's spot.
-fn fd_core<M: FdModel, R: Real, const GRADS: bool>(p: &M::P<R>, g: &Grid) -> FdResult<R, M::P<R>> {
+fn fd_core<M: FdModel, R: Real, const GRADS: bool>(p: &M::P<R>, g: &FdGrid) -> FdResult<R, M::P<R>> {
     let (x_lo, nx, nt) = (g.x_lo, g.nx, g.nt);
     assert!(nt >= 1, "need at least 1 time step");
     let x0 = M::spot_eval(p);
@@ -392,7 +414,7 @@ fn fd_core<M: FdModel, R: Real, const GRADS: bool>(p: &M::P<R>, g: &Grid) -> FdR
 /// # Panics
 ///
 /// If `grid.nx < 3` or `grid.nt == 0`.
-pub fn fd_greeks<M: FdModel, R: Real>(params: &M::P<R>, grid: &Grid) -> FdResult<R, M::P<R>> {
+pub fn fd_greeks<M: FdModel, R: Real>(params: &M::P<R>, grid: &FdGrid) -> FdResult<R, M::P<R>> {
     fd_core::<M, R, true>(params, grid)
 }
 
@@ -401,6 +423,7 @@ pub fn fd_greeks<M: FdModel, R: Real>(params: &M::P<R>, grid: &Grid) -> FdResult
 /// # Panics
 ///
 /// If `grid.nx < 3` or `grid.nt == 0`.
-pub fn fd_price<M: FdModel, R: Real>(params: &M::P<R>, grid: &Grid) -> R {
+#[must_use]
+pub fn fd_price<M: FdModel, R: Real>(params: &M::P<R>, grid: &FdGrid) -> R {
     fd_core::<M, R, false>(params, grid).price
 }
