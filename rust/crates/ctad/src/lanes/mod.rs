@@ -9,8 +9,16 @@ use std::fmt::Debug;
 
 mod scalar;
 
+pub mod portable;
+
 #[cfg(target_arch = "aarch64")]
 pub mod neon;
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2", target_feature = "fma"))]
+pub mod avx2;
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+pub mod avx512;
 
 /// A pack of `W` floats. Also a first-order [`Real`] (its own value, zero tangent).
 pub trait Lanes: Real<Lanes = Self> + Debug + PartialEq {
@@ -38,6 +46,10 @@ pub trait Lanes: Real<Lanes = Self> + Debug + PartialEq {
 /// Polynomial `exp` shared by the vector backends: `exp(x) = 2^n · p(r)`, `n = round(x / ln2)`,
 /// `r = x - n·ln2` (two-constant Cody-Waite), `p` the Taylor polynomial in FMA Horner form.
 /// Max relative error ≈ 2e-7 (`f32`, degree 6) and ≈ 6e-16 (`f64`, degree 12) on the clamped range.
+#[cfg(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "avx2", target_feature = "fma")
+))]
 pub(crate) mod exp_poly {
     pub mod f32 {
         pub const LO: f32 = -87.0;
@@ -73,7 +85,11 @@ pub(crate) mod exp_poly {
     }
 }
 
-/// Packs by precision and width for the target being compiled.
+/// Packs by precision and width for the target being compiled, chosen by the enabled target
+/// features (no runtime dispatch): NEON on aarch64; on x86_64 AVX-512 (`avx512f`), else AVX2
+/// (`avx2` + `fma`), else [`portable`]; [`portable`] on other targets. Packs narrower than a
+/// register use the 128-bit (AVX2) or 256-bit (AVX-512) packs, so every alias is one or more
+/// whole registers.
 #[cfg(target_arch = "aarch64")]
 mod aliases {
     use super::neon::{F32, F64};
@@ -86,7 +102,56 @@ mod aliases {
     pub type F64x8 = F64<4>;
     pub type F64x16 = F64<8>;
 }
-#[cfg(target_arch = "aarch64")]
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+mod aliases {
+    use super::avx2::{F32, F32h, F64, F64h};
+    use super::avx512::{F32 as F32z, F64 as F64z};
+    pub type F32x4 = F32h<1>;
+    pub type F32x8 = F32<1>;
+    pub type F32x16 = F32z<1>;
+    pub type F32x32 = F32z<2>;
+    pub type F64x2 = F64h<1>;
+    pub type F64x4 = F64<1>;
+    pub type F64x8 = F64z<1>;
+    pub type F64x16 = F64z<2>;
+}
+
+#[cfg(all(
+    target_arch = "x86_64",
+    not(target_feature = "avx512f"),
+    target_feature = "avx2",
+    target_feature = "fma"
+))]
+mod aliases {
+    use super::avx2::{F32, F32h, F64, F64h};
+    pub type F32x4 = F32h<1>;
+    pub type F32x8 = F32<1>;
+    pub type F32x16 = F32<2>;
+    pub type F32x32 = F32<4>;
+    pub type F64x2 = F64h<1>;
+    pub type F64x4 = F64<1>;
+    pub type F64x8 = F64<2>;
+    pub type F64x16 = F64<4>;
+}
+
+#[cfg(not(any(
+    target_arch = "aarch64",
+    all(target_arch = "x86_64", target_feature = "avx2", target_feature = "fma"),
+    all(target_arch = "x86_64", target_feature = "avx512f"),
+)))]
+mod aliases {
+    use super::portable::{F32, F64};
+    pub type F32x4 = F32<4>;
+    pub type F32x8 = F32<8>;
+    pub type F32x16 = F32<16>;
+    pub type F32x32 = F32<32>;
+    pub type F64x2 = F64<2>;
+    pub type F64x4 = F64<4>;
+    pub type F64x8 = F64<8>;
+    pub type F64x16 = F64<16>;
+}
+
 pub use aliases::*;
 
 #[cfg(test)]

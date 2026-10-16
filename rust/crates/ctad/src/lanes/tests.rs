@@ -1,7 +1,6 @@
 //! Every pack op lane-by-lane against plain scalar arithmetic.
 
 use super::*;
-use crate::AdNum;
 
 fn check<L: Lanes>(name: &str) {
     let w = L::W;
@@ -58,5 +57,51 @@ fn neon() {
     check::<F32x4>("F32x4");
     check::<F32x32>("F32x32");
     check::<F64x2>("F64x2");
+    check::<F64x16>("F64x16");
+}
+
+#[test]
+fn portable() {
+    use super::portable::{F32, F64};
+    check::<F32<1>>("portable F32<1>");
+    check::<F32<8>>("portable F32<8>");
+    check::<F64<1>>("portable F64<1>");
+    check::<F64<4>>("portable F64<4>");
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx2", target_feature = "fma"))]
+#[test]
+fn avx2() {
+    use super::avx2::{F32, F32h, F64, F64h};
+    check::<F32h<1>>("F32h<1>");
+    check::<F32h<2>>("F32h<2>");
+    check::<F64h<1>>("F64h<1>");
+    check::<F64h<2>>("F64h<2>");
+    check::<F32<1>>("F32<1>");
+    check::<F32<4>>("F32<4>");
+    check::<F64<1>>("F64<1>");
+    check::<F64<4>>("F64<4>");
+}
+
+#[cfg(all(target_arch = "x86_64", target_feature = "avx512f"))]
+#[test]
+fn avx512() {
+    use super::avx512::{F32, F64};
+    check::<F32<1>>("F32<1>");
+    check::<F32<2>>("F32<2>");
+    check::<F64<1>>("F64<1>");
+    check::<F64<2>>("F64<2>");
+}
+
+/// The width aliases of whichever backend this target selected.
+#[test]
+fn aliases() {
+    check::<F32x4>("F32x4");
+    check::<F32x8>("F32x8");
+    check::<F32x16>("F32x16");
+    check::<F32x32>("F32x32");
+    check::<F64x2>("F64x2");
+    check::<F64x4>("F64x4");
+    check::<F64x8>("F64x8");
     check::<F64x16>("F64x16");
 }
