@@ -16,6 +16,7 @@ use syn::spanned::Spanned;
 use syn::{Error, FnArg, ItemFn, Pat, Result, ReturnType, Type};
 
 mod front;
+mod legacy;
 mod model;
 use front::{Builder, Param, Shape};
 
@@ -30,7 +31,7 @@ pub fn mc_model(attr: TokenStream, item: TokenStream) -> TokenStream {
         return Error::new(Tokens::from(attr).span(), "`#[mc_model]` takes no arguments").to_compile_error().into();
     }
     let imp = syn::parse_macro_input!(item as syn::ItemImpl);
-    model::mc(imp).unwrap_or_else(|e| e.to_compile_error()).into()
+    legacy::mc(imp).unwrap_or_else(|e| e.to_compile_error()).into()
 }
 
 /// Compile a finite-difference model: an `impl` block with the kernels
@@ -44,7 +45,35 @@ pub fn fd_model(attr: TokenStream, item: TokenStream) -> TokenStream {
         return Error::new(Tokens::from(attr).span(), "`#[fd_model]` takes no arguments").to_compile_error().into();
     }
     let imp = syn::parse_macro_input!(item as syn::ItemImpl);
-    model::fd(imp).unwrap_or_else(|e| e.to_compile_error()).into()
+    legacy::fd(imp).unwrap_or_else(|e| e.to_compile_error()).into()
+}
+
+/// Compile every function of an inherent `impl` block as a kernel (like `#[kernel]`) and
+/// implement the trait of the engine module `path` from them: `#[kernels(path)]`.
+///
+/// The functions stay callable as written; the engine's `path::__raads_model!` checks them
+/// against its specification (names, shapes, `#[data]`) and assembles the trait impl.
+/// Consts the engine declares are forwarded from the block, so kernels can read them as
+/// `Self::NAME` without the trait in scope. The generic parameter name `R` is reserved.
+#[proc_macro_attribute]
+pub fn kernels(attr: TokenStream, item: TokenStream) -> TokenStream {
+    let engine = match syn::parse::<syn::Path>(attr) {
+        Ok(p) => p,
+        Err(e) => {
+            return Error::new(e.span(), "expected the engine module, e.g. `#[kernels(raads_engines::paths)]`").to_compile_error().into();
+        }
+    };
+    let imp = syn::parse_macro_input!(item as syn::ItemImpl);
+    model::kernels(engine, imp).unwrap_or_else(|e| e.to_compile_error()).into()
+}
+
+/// Check the kernels `#[kernels]` passed to an engine against the engine's specification
+/// and call the engine back with them (see the `model` module). Not public API.
+#[doc(hidden)]
+#[proc_macro]
+pub fn check_kernels(input: TokenStream) -> TokenStream {
+    let input = syn::parse_macro_input!(input as model::Input);
+    model::check(input).unwrap_or_else(|e| e.to_compile_error()).into()
 }
 
 /// Compile a kernel.

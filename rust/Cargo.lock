@@ -146,6 +146,16 @@ name = "raads-codegen"
 version = "0.1.0"
 
 [[package]]
+name = "raads-engines"
+version = "0.1.0"
+dependencies = [
+ "raads",
+ "rand",
+ "rand_distr",
+ "trybuild",
+]
+
+[[package]]
 name = "raads-macros"
 version = "0.1.0"
 dependencies = [

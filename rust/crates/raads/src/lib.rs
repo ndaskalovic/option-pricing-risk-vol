@@ -124,14 +124,14 @@ pub use arr::Arr;
 pub use fd::{FdGrid, FdModel, FdResult, fd_greeks, fd_price};
 pub use lanes::Lanes;
 pub use mc::{McModel, McPrice, McResult, mc_greeks, mc_price};
-pub use raads_macros::{fd_model, kernel, mc_model};
+pub use raads_macros::{fd_model, kernel, kernels, mc_model};
 pub use real::{Dual, Real};
 pub use surface::{FdBook, FdSurface, SurfaceGrid, SurfaceOption, SurfacePoint, fd_surface, fd_surface_book};
 
 /// Everything a model or a pricing call needs: `use raads::prelude::*;`.
 pub mod prelude {
     pub use crate::lanes::{F32x4, F32x8, F32x16, F32x32, F64x2, F64x4, F64x8, F64x16};
-    pub use crate::{AdNum, Arr, Dual, Lanes, Real, fd_model, kernel, mc_model};
+    pub use crate::{AdNum, Arr, Dual, Lanes, Real, fd_model, kernel, kernels, mc_model};
     pub use crate::{FdBook, FdSurface, SurfaceGrid, SurfaceOption, SurfacePoint, fd_surface, fd_surface_book};
     pub use crate::{FdGrid, FdModel, FdResult, fd_greeks, fd_price};
     pub use crate::{McModel, McPrice, McResult, mc_greeks, mc_price};
@@ -142,6 +142,7 @@ pub mod prelude {
 pub mod __private {
     pub use crate::trace::{Tracer, trace};
     pub use raads_codegen as codegen;
+    pub use raads_macros::check_kernels;
 }
 
 /// Compiles and runs the README example.
