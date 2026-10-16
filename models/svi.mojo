@@ -1,9 +1,10 @@
 """SVI-vol European call for the MC engine (log-space GBM with vol from a raw-SVI slice).
 
-params: s0, r, T, K, a, b, rho, m, sigma.  As in euro_call_svi.mojo, vol = sqrt(w(K) / T)
+params: s0, r, T, K, a, b, rho, m, sigma.  vol = sqrt(w(K) / T)
 with T detached, so Theta holds the SVI vol fixed.
 """
-from autodiff.ct import ADNum, McModel
+from autodiff import ADNum
+from engines import McModel
 
 
 struct SviCall(McModel):

@@ -1,5 +1,6 @@
 """GBM European and Asian calls, written once against ADNum (log-space exact scheme)."""
-from autodiff.ct import ADNum, McModel
+from autodiff import ADNum
+from engines import McModel
 
 
 struct GbmCall(McModel):
@@ -66,3 +67,37 @@ struct GbmAsianCall(McModel):
     def payoff[N: ADNum](s: Array[N, Self.NS], p: Array[N, Self.NP], c: Array[N, Self.NC]) -> N:
         var r = p[1]; var T = p[3]; var K = p[4]
         return (s[1] * c[2] - K).relu() * (-r * T).exp()
+
+
+@always_inline
+def smooth_relu[N: ADNum](x: N, eps: Float64) -> N:
+    """Softplus max(x, 0) of width eps, eps * log(1 + exp(x / eps)), in overflow-safe form.
+    Makes pathwise second derivatives (gamma, vanna) consistent; price bias O(eps^2)."""
+    var ax = N.select_gt(x, x.constant(0.0), x, -x)
+    return x.relu() + eps * (1.0 + (-ax / eps).exp()).log()
+
+
+struct GbmCallSmooth(McModel):
+    """GBM call with a softplus-smoothed payoff (width EPS), for pathwise second-order Greeks."""
+    comptime NP = 5
+    comptime NC = 2
+    comptime NS = 1
+    comptime NZ = 1
+    comptime EPS = 0.5
+
+    @staticmethod
+    def setup[N: ADNum](p: Array[N, Self.NP], n_steps: N) -> Array[N, Self.NC]:
+        return GbmCall.setup[N](p, n_steps)
+
+    @staticmethod
+    def init[N: ADNum](p: Array[N, Self.NP]) -> Array[N, Self.NS]:
+        return GbmCall.init[N](p)
+
+    @staticmethod
+    def step[N: ADNum](s: Array[N, Self.NS], c: Array[N, Self.NC], z: Array[N, Self.NZ]) -> Array[N, Self.NS]:
+        return GbmCall.step[N](s, c, z)
+
+    @staticmethod
+    def payoff[N: ADNum](s: Array[N, Self.NS], p: Array[N, Self.NP], c: Array[N, Self.NC]) -> N:
+        var r = p[1]; var T = p[3]; var K = p[4]
+        return smooth_relu(s[0].exp() - K, Self.EPS) * (-r * T).exp()

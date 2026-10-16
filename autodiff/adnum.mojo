@@ -1,7 +1,7 @@
 """The supported-operations API. Kernels are written once, generic over `N: ADNum`.
 
-Implementations: `TraceNum` (compile-time graph capture, used by `Compiled`) and
-`TapeNum` (the runtime tape, used as a flexible fallback and as the test oracle).
+The implementation is `TraceNum`: `Compiled` evaluates a kernel on it inside the compiler
+to capture its graph, then emits straight-line forward and reverse code.
 Comparisons are only available through `select_gt`, so every kernel is branch-free
 on differentiable values: the graph is identical on every call.
 """
@@ -30,7 +30,7 @@ trait ADNum(ImplicitlyCopyable, Movable, Deinitable):
         """Same value, zero derivative (like JAX's stop_gradient)."""
         ...
     def constant(self, k: Float64) -> Self:
-        """A constant of the same kind as `self` (same graph / tape)."""
+        """A constant of the same kind as `self` (same graph)."""
         ...
 
     @staticmethod

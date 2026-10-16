@@ -3,29 +3,29 @@
 Run from repo root: mojo run -I . benchmarks/bench_fd_engine.mojo
 """
 from std.math import log
-from autodiff.ct import fd_compiled, fd_price
+from autodiff import Vec
+from engines import fd_greeks, fd_price
 from models.bs_fd import BsAmericanPut
 import std.time
 
 
 def run[W: Int, DT: DType](nx: Int, nt: Int):
-    var p = Array[Float64, 5](fill=0)
-    p[0] = 100; p[1] = 0.01; p[2] = 0.2; p[3] = 1.0; p[4] = 100
+    comptime R = Vec[DT, W]
+    var p = Array[R, 5](fill=R.splat(0))
+    p[0] = R.splat(100); p[1] = R.splat(0.01); p[2] = R.splat(0.2); p[3] = R.splat(1.0); p[4] = R.splat(100)
     var lo = log(100.0) - 1.2; var hi = log(100.0) + 1.2
     var best = 1e9; var chk = 0.0
     for _ in range(11):
         var t0 = Int(std.time.perf_counter_ns())
-        var c = fd_compiled[BsAmericanPut, W, DT](p, lo, hi, nx, nt)
+        var c = fd_greeks[BsAmericanPut, R](p, lo, hi, nx, nt)
         var t1 = Int(std.time.perf_counter_ns())
-        chk += c.price + c.grad[0] + c.grad[1] + c.grad[2] + c.grad[3] + c.grad[4]
+        var s = c.price.value() + c.grad[0].value() + c.grad[1].value() + c.grad[2].value() + c.grad[3].value() + c.grad[4].value()
+        chk += Float64(s.cast[DType.float64]().reduce_add())
         best = min(best, Float64(t1 - t0) * 1e-6)
-    var pv = Array[SIMD[DT, W], 5](fill=0)
-    for j in range(5):
-        pv[j] = SIMD[DT, W](p[j])
     var bp = 1e9
     for _ in range(11):
         var t0 = Int(std.time.perf_counter_ns())
-        var v = fd_price[BsAmericanPut, W, DT](pv, lo, hi, nx, nt)
+        var v = fd_price[BsAmericanPut, R](p, lo, hi, nx, nt).value()
         var t1 = Int(std.time.perf_counter_ns())
         chk += Float64(v[0].cast[DType.float64]())
         bp = min(bp, Float64(t1 - t0) * 1e-6)

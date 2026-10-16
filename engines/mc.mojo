@@ -1,24 +1,20 @@
-"""Monte Carlo engine: price + gradient w.r.t. every parameter, from one model source.
+"""Monte Carlo engine: price and gradient w.r.t. every model parameter (pathwise AAD).
 
 A model is four small functions written once against `ADNum`:
-    setup(p, [n_steps]) -> c          once per run   (per-step coefficients)
-    init(p)             -> s0         once per run   (initial state)
-    step(s, c, z)       -> s'         every step     (z: NZ normal draws)
-    payoff(s, p, c)     -> value      every path
-`mc_compiled` compiles each one at compile time (see `Compiled`, `Scan`);
-`mc_tape` runs the same source on the runtime tape (flexible fallback and oracle).
+    setup(p, n_steps) -> c        once per run    (per-step coefficients)
+    init(p)           -> s0       once per run    (initial state)
+    step(s, c, z)     -> s'       every step      (z: NZ normal draws)
+    payoff(s, p, c)   -> value    every path
+Each is compiled (`Compiled`, `Scan`); per path the engine runs the scan forward, a fused
+payoff vjp and the scan backward, then reverses `init` and `setup` once.
 
-SIMD lanes are independent paths. `normals` holds n_paths * n_steps * NZ * W draws:
-path i starts at i*n_steps*NZ*W, step k at +k*NZ*W, draw j at +j*W.
+SIMD lanes are paths. `normals` holds n_paths * n_steps * NZ * W draws: path i starts at
+i*n_steps*NZ*W, step k at +k*NZ*W, draw j at +j*W.
+Value type R: `Vec` gives price and gradient; `Dual` (parameters seeded with a direction v)
+also gives their tangents, grad . v and the Hessian-vector product H v.
 """
 from std.memory.alloc import unsafe_alloc
-from ..number import Number
-from ..tape import Tape
-from .adnum import ADNum
-from .trace import Kernel
-from .compiled import Compiled
-from .scan import Scan
-from .tapenum import TapeNum
+from autodiff import ADNum, Kernel, Compiled, Scan, Real
 
 
 trait McModel:
@@ -108,10 +104,20 @@ struct _PayoffK[M: McModel](Kernel):
         return y^
 
 
-@fieldwise_init
 struct McResult[NP: Int](Movable, Writable):
+    """Path means of the price and gradient, and their tangents (zero for `Vec`; for `Dual`
+    seeded with direction v: price_tangent = grad . v, grad_tangent = H v)."""
     var price: Float64
     var grad: Array[Float64, Self.NP]
+    var price_tangent: Float64
+    var grad_tangent: Array[Float64, Self.NP]
+
+    def __init__(out self, price: Float64, var grad: Array[Float64, Self.NP],
+                 price_tangent: Float64, var grad_tangent: Array[Float64, Self.NP]):
+        self.price = price
+        self.grad = grad^
+        self.price_tangent = price_tangent
+        self.grad_tangent = grad_tangent^
 
     def write_to(self, mut writer: Some[Writer]):
         writer.write("price=", self.price, " grad=[")
@@ -119,106 +125,66 @@ struct McResult[NP: Int](Movable, Writable):
             writer.write(self.grad[j], ", " if j < Self.NP - 1 else "]")
 
 
-def _lane_mean[W: Int, DT: DType](v: SIMD[DT, W], count: Int) -> Float64:
-    return Float64(v.cast[DType.float64]().reduce_add()) / Float64(count * W)
+def _mean[DT: DType, W: Int](v: SIMD[DT, W], n_paths: Int) -> Float64:
+    return Float64(v.cast[DType.float64]().reduce_add()) / Float64(n_paths * W)
 
 
-def mc_compiled[M: McModel, W: Int, DT: DType](
-    params: Array[Float64, M.NP], n_steps: Int, n_paths: Int, normals: Pointer[Float32, _]
+def mc_greeks[M: McModel, R: Real](
+    params: Array[R, M.NP], n_steps: Int, n_paths: Int, normals: Pointer[Float32, _]
 ) -> McResult[M.NP]:
-    """Compiled engine. `n_paths` counts SIMD paths (W scalar paths each)."""
-    comptime V = SIMD[DT, W]
+    """Price and gradient (path means) in one pass. `n_paths` counts SIMD paths (R.W scalar
+    paths each); every lane of `params` should hold the same value."""
     comptime S = Scan[_StepK[M], M.NS]
     comptime Setup = Compiled[_SetupK[M]]
     comptime Init = Compiled[_InitK[M]]
     comptime Pay = Compiled[_PayoffK[M]]
-
-    var p = Array[V, M.NP](fill=0)
-    comptime for j in range(M.NP):
-        p[j] = V(params[j])
-    var nd = Array[V, 1](fill=V(Float64(n_steps)))
-    var none = Array[V, 1](fill=0)
+    var nd = Array[R, 1](fill=R.splat(Float64(n_steps)))
+    var none = Array[R, 1](fill=R.splat(0))
 
     # path-invariant parts: once per run
-    var c = Setup.eval[W, DT](p, nd)
-    var s0 = Init.eval[W, DT](p, none)
+    var c = Setup.eval[R](params, nd)
+    var s0 = Init.eval[R](params, none)
 
-    var res = unsafe_alloc[V](S.residual_slots(n_steps))
-    var a_c = Array[V, M.NC](fill=0)
-    var a_s0 = Array[V, M.NS](fill=0)
-    var a_p = Array[V, M.NP](fill=0)
-    var acc = V(0)
-    var stride = n_steps * M.NZ * W
+    var res = unsafe_alloc[R](S.residual_slots(n_steps))
+    var a_c = Array[R, M.NC](fill=R.splat(0))
+    var a_s0 = Array[R, M.NS](fill=R.splat(0))
+    var a_p = Array[R, M.NP](fill=R.splat(0))
+    var acc = R.splat(0)
+    var stride = n_steps * M.NZ * R.W
     for i in range(n_paths):
         var z = normals.unsafe_offset(i * stride)
-        var sn = S.fwd[W, DT](s0, c, z, n_steps, res)
+        var sn = S.fwd[R](s0, c, z, n_steps, res)
         # payoff: fused value + reverse
-        var px = Array[V, Pay.K.NI](fill=0)
+        var px = Array[R, Pay.K.NI](fill=R.splat(0))
         comptime for j in range(M.NS):
             px[j] = sn[j]
         comptime for j in range(M.NP):
-            px[M.NS + j] = p[j]
+            px[M.NS + j] = params[j]
         comptime for j in range(M.NC):
             px[M.NS + M.NP + j] = c[j]
-        var a_px = Array[V, Pay.K.NI](fill=V(-0.0))
-        var one = Array[V, 1](fill=V(1))
-        var y = Pay.vjp[W, DT](px, none, one, a_px)
+        var a_px = Array[R, Pay.K.NI](fill=R.splat(-0.0))
+        var one = Array[R, 1](fill=R.splat(1))
+        var y = Pay.vjp[R](px, none, one, a_px)
         acc += y[0]
-        var a_sn = Array[V, M.NS](fill=0)
+        var a_sn = Array[R, M.NS](fill=R.splat(0))
         comptime for j in range(M.NS):
             a_sn[j] = a_px[j]
         comptime for j in range(M.NP):
             a_p[j] += a_px[M.NS + j]
         comptime for j in range(M.NC):
             a_c[j] += a_px[M.NS + M.NP + j]
-        var a0 = S.bwd[W, DT](z, n_steps, res, a_sn, a_c)
+        var a0 = S.bwd[R](z, n_steps, res, a_sn, a_c)
         comptime for j in range(M.NS):
             a_s0[j] += a0[j]
     res.unsafe_free()
 
     # reverse through the path-invariant parts once
-    _ = Init.vjp[W, DT](p, none, a_s0, a_p)
-    _ = Setup.vjp[W, DT](p, nd, a_c, a_p)
+    _ = Init.vjp[R](params, none, a_s0, a_p)
+    _ = Setup.vjp[R](params, nd, a_c, a_p)
 
     var g = Array[Float64, M.NP](fill=0)
+    var gt = Array[Float64, M.NP](fill=0)
     comptime for j in range(M.NP):
-        g[j] = _lane_mean[W, DT](a_p[j], n_paths)
-    return McResult[M.NP](_lane_mean[W, DT](acc, n_paths), g^)
-
-
-def mc_tape[M: McModel, W: Int, DT: DType](
-    params: Array[Float64, M.NP], n_steps: Int, n_paths: Int, normals: Pointer[Float32, _]
-) -> McResult[M.NP]:
-    """Same model on the runtime tape (pathwise: mark / rewind). Slower; the oracle."""
-    comptime T = TapeNum[W, DT]
-    comptime V = SIMD[DT, W]
-    var tape = Tape[W, DT](n_steps * (16 + 16 * M.NS * M.NZ) + 4096)
-    var p = Array[T, M.NP](fill=T(Number[W, DT](0, tape)))
-    comptime for j in range(M.NP):
-        p[j] = T(Number[W, DT](V(params[j]), tape))
-    var n = T(Number[W, DT](V(Float64(n_steps)), tape))
-    var c = M.setup[T](p, n)
-    var s0 = M.init[T](p)
-    tape.set_mark()
-    var acc = V(0)
-    var stride = n_steps * M.NZ * W
-    for i in range(n_paths):
-        var zp = normals.unsafe_offset(i * stride)
-        var s = s0.copy()
-        for k in range(n_steps):
-            var z = Array[T, M.NZ](fill=s0[0])
-            comptime for j in range(M.NZ):
-                z[j] = s0[0].constant(0)
-                z[j] = T(Number[W, DT](zp.unsafe_load[width=W]((k * M.NZ + j) * W).cast[DT](), tape))
-            s = M.step[T](s, c, z)
-        var y = M.payoff[T](s, p, c)
-        y.n.propagate_adjoints(1)
-        acc += y.n.value
-        tape.rewind_to_mark()
-    tape.propagate_mark_to_start()
-    var g = Array[Float64, M.NP](fill=0)
-    comptime for j in range(M.NP):
-        g[j] = _lane_mean[W, DT](p[j].n.grad(), n_paths)
-    var price = _lane_mean[W, DT](acc, n_paths)
-    tape.free()
-    return McResult[M.NP](price, g^)
+        g[j] = _mean(a_p[j].value(), n_paths)
+        gt[j] = _mean(a_p[j].tangent(), n_paths)
+    return McResult[M.NP](_mean(acc.value(), n_paths), g^, _mean(acc.tangent(), n_paths), gt^)
