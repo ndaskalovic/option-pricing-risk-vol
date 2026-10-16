@@ -5,7 +5,7 @@ Run from repo root: mojo run -I . benchmarks/bench_engine.mojo
 from std.memory.alloc import unsafe_alloc
 from std.math import exp, sqrt, log
 from autodiff import Number, Tape
-from autodiff.ct import mc_compiled
+from engines import mc_compiled
 from models.gbm import GbmCall, GbmAsianCall
 from vanilla_euro_call import EuropeanCallOption
 import std.random, std.time

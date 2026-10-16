@@ -19,8 +19,7 @@ and grid Greeks.
 """
 from std.math import ceil, log
 from std.os import abort
-from .real import Real
-from .compiled import Compiled
+from autodiff.ct import Real, Compiled
 from .fd import FdModel, _CoefK, _PayK, _Buf, _exercise, _exercise_weight, GAUSS_X, GAUSS_W
 
 

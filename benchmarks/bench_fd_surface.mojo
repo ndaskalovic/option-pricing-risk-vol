@@ -9,7 +9,8 @@ One FD solve per underlier (`fd_surface`, unit-strike model on log(S/K)), f64:
 Every output is consumed.
 """
 from std.math import exp, log, sqrt, ceil
-from autodiff.ct import Vec, Dual, FdSurface, SurfacePoint, fd_surface, fd_surface_book
+from autodiff.ct import Vec, Dual
+from engines import FdSurface, SurfacePoint, fd_surface, fd_surface_book
 from models.bs_fd import BsPutMoneyness
 import std.random, std.time
 

@@ -11,7 +11,7 @@ from std.memory.alloc import unsafe_alloc
 from std.math import log
 from std.ffi import external_call
 from autodiff import Number, Tape
-from autodiff.ct import mc_compiled, fd_compiled, fd_price
+from engines import mc_compiled, fd_compiled, fd_price
 from models.gbm import GbmCall
 from models.bs_fd import BsAmericanPut
 from vanilla_euro_call import EuropeanCallOption

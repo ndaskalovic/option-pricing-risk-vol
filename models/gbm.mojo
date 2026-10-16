@@ -1,5 +1,6 @@
 """GBM European and Asian calls, written once against ADNum (log-space exact scheme)."""
-from autodiff.ct import ADNum, McModel, smooth_relu
+from autodiff.ct import ADNum, smooth_relu
+from engines import McModel
 
 
 struct GbmCall(McModel):

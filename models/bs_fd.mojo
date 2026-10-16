@@ -1,5 +1,6 @@
 """Black-Scholes European call / American put for the FD engine, written once against ADNum."""
-from autodiff.ct import ADNum, FdModel
+from autodiff.ct import ADNum
+from engines import FdModel
 
 
 struct BsEuroCall(FdModel):

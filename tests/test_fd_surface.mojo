@@ -8,7 +8,8 @@ Run from repo root: mojo run -I . tests/test_fd_surface.mojo
 """
 from std.math import exp, log, sqrt, erf
 from std.os import abort
-from autodiff.ct import Vec, Dual, FdSurface, SurfacePoint, fd_surface, fd_surface_book, fd_compiled
+from autodiff.ct import Vec, Dual
+from engines import FdSurface, SurfacePoint, fd_surface, fd_surface_book, fd_compiled
 from models.bs_fd import BsPutMoneyness, BsAmericanPut
 import std.random
 

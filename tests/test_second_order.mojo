@@ -16,10 +16,7 @@ Run from repo root: mojo run -I . tests/test_second_order.mojo
 from std.os import abort
 from std.math import log
 from std.memory.alloc import unsafe_alloc
-from autodiff.ct import (
-    McModel, FdModel, Hessian, mc_compiled, mc_hessian, mc_hessian_bumped,
-    fd_compiled, fd_hessian, fd_hessian_bumped,
-)
+from engines import McModel, FdModel, Hessian, mc_compiled, mc_hessian, mc_hessian_bumped, fd_compiled, fd_hessian, fd_hessian_bumped
 from models.gbm import GbmCall, GbmCallSmooth
 from models.bs_fd import BsEuroCall, BsAmericanPut, BsAmericanPutSmooth
 import std.random

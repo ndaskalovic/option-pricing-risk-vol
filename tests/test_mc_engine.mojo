@@ -4,7 +4,7 @@ Run from repo root: mojo run -I . tests/test_mc_engine.mojo
 """
 from std.os import abort
 from std.memory.alloc import unsafe_alloc
-from autodiff.ct import McModel, McResult, mc_compiled, mc_tape
+from engines import McModel, McResult, mc_compiled, mc_tape
 from models.gbm import GbmCall, GbmAsianCall
 from models.svi import SviCall
 import std.random

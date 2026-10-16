@@ -12,14 +12,8 @@ SIMD lanes are independent paths. `normals` holds n_paths * n_steps * NZ * W dra
 path i starts at i*n_steps*NZ*W, step k at +k*NZ*W, draw j at +j*W.
 """
 from std.memory.alloc import unsafe_alloc
-from ..number import Number
-from ..tape import Tape
-from .adnum import ADNum
-from .trace import Kernel
-from .compiled import Compiled
-from .scan import Scan
-from .tapenum import TapeNum
-from .real import Real, Vec, Dual
+from autodiff import Number, Tape
+from autodiff.ct import ADNum, Kernel, Compiled, Scan, TapeNum, Real, Vec, Dual
 
 
 trait McModel:

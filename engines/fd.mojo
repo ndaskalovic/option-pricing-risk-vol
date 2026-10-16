@@ -17,13 +17,8 @@ quadratic interpolation at x0.
 SIMD lanes are independent problems (e.g. different parameter sets).
 """
 from std.memory.alloc import unsafe_alloc
-from ..number import Number
-from ..tape import Tape
-from .adnum import ADNum, maximum, smooth_relu
-from .trace import Kernel
-from .compiled import Compiled
-from .tapenum import TapeNum
-from .real import Real, Vec, Dual
+from autodiff import Number, Tape
+from autodiff.ct import ADNum, maximum, smooth_relu, Kernel, Compiled, TapeNum, Real, Vec, Dual
 from .mc import Hessian
 
 

@@ -5,7 +5,7 @@ Run from repo root: mojo run -I . tests/test_fd_engine.mojo
 """
 from std.os import abort
 from std.math import exp, sqrt, log
-from autodiff.ct import FdModel, fd_compiled, fd_batch, fd_price, fd_tape
+from engines import FdModel, fd_compiled, fd_batch, fd_price, fd_tape
 from models.bs_fd import BsEuroCall, BsAmericanPut
 
 comptime W = 2

@@ -5,8 +5,8 @@ Every output (price, gradient, H.v / Hessian) is consumed so no sweep is dead co
 """
 from std.math import log
 from std.memory.alloc import unsafe_alloc
-from autodiff.ct import mc_compiled, mc_hvp, mc_hessian, mc_hessian_bumped
-from autodiff.ct import FdModel, fd_compiled, fd_price, fd_hvp, fd_hessian, fd_hessian_bumped
+from engines import mc_compiled, mc_hvp, mc_hessian, mc_hessian_bumped
+from engines import FdModel, fd_compiled, fd_price, fd_hvp, fd_hessian, fd_hessian_bumped
 from models.gbm import GbmCallSmooth
 from models.bs_fd import BsAmericanPut, BsAmericanPutSmooth
 import std.random, std.time

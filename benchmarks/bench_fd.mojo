@@ -3,7 +3,7 @@
 Run from repo root: mojo run -I . benchmarks/bench_fd.mojo
 """
 from std.math import log
-from autodiff.ct import fd_compiled, fd_tape
+from engines import fd_compiled, fd_tape
 from models.bs_fd import BsAmericanPut
 import std.time
 
