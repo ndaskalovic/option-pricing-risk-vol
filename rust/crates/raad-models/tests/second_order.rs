@@ -10,12 +10,12 @@
 //!   the kinked payoff needs bumping of the AAD gradient.
 
 use raad::lanes::F64x8;
-use raad::{Arr, Dual, FdModel, Grid, McModel, fd_greeks, mc_greeks};
+use raad::{Dual, FdModel, Grid, McModel, fd_greeks, mc_greeks};
 use raad_models::bs_fd::{BsAmericanPut, BsAmericanPutSmooth, BsEuroCall};
 use raad_models::gbm::{GbmCall, GbmCallSmooth};
-use rand::SeedableRng;
-use rand::rngs::StdRng;
-use rand_distr::{Distribution, StandardNormal};
+
+mod common;
+use common::{Checks, arr, rel};
 
 const NP: usize = 5;
 const S0: usize = 0;
@@ -27,9 +27,9 @@ const N_PATHS: usize = 200_000 / 8;
 
 /// Black-Scholes Hessian over (S0, r, sigma, T, K), mpmath at 40 digits, row-major.
 const BS: [f64; 25] = [
-    0.019723966545394445, 1.9723966545394445, 0.098619832726972224, 0.029585949818091667, -0.019723966545394445,
+    0.019723966545394445, 1.9723966545394445, 0.09861983272697222, 0.029585949818091667, -0.019723966545394445,
     1.9723966545394445, 149.7112149070298, -29.585949818091667, 46.066967714175774, -1.497112149070298,
-    0.098619832726972224, -29.585949818091667, -1.4792974909045834, 19.28017729812307, 0.29585949818091667,
+    0.09861983272697222, -29.585949818091667, -1.4792974909045834, 19.28017729812307, 0.29585949818091667,
     0.029585949818091667, 46.066967714175774, 19.28017729812307, -2.0313904075939707, 0.014614828327388687,
     -0.019723966545394445, -1.497112149070298, 0.29585949818091667, 0.014614828327388687, 0.019723966545394445,
 ];
@@ -46,14 +46,6 @@ impl Hessian {
     }
 }
 
-fn arr<A: Arr<T>, T: Copy>(f: impl Fn(usize) -> T) -> A {
-    let mut a = A::splat(f(0));
-    for (i, x) in a.as_mut().iter_mut().enumerate() {
-        *x = f(i);
-    }
-    a
-}
-
 fn bump(p: [f64; NP], j: usize, rel: f64, sign: f64) -> [f64; NP] {
     let mut q = p;
     q[j] += sign * rel * p[j].abs().max(1e-2);
@@ -65,8 +57,7 @@ fn grid() -> Grid {
 }
 
 fn normals() -> Vec<f32> {
-    let mut rng = StdRng::seed_from_u64(42);
-    (0..N_PATHS * N_STEPS * 8).map(|_| StandardNormal.sample(&mut rng)).collect()
+    common::normals(N_PATHS * N_STEPS * 8, 42)
 }
 
 /// One forward-over-reverse pass per column (Dual parameters seeded with e_j).
@@ -126,10 +117,6 @@ fn mc_hessian_bumped<M: McModel>(p: [f64; NP], z: &[f32], rel: f64) -> Hessian {
     Hessian { price: g(p).price, h }
 }
 
-fn rel(a: f64, b: f64) -> f64 {
-    (a - b).abs() / b.abs().max(1e-9)
-}
-
 fn max_asym(h: &Hessian) -> f64 {
     let mut m = 0.0f64;
     for i in 0..NP {
@@ -152,26 +139,9 @@ fn max_rel_vs(a: &Hessian, b: &Hessian, floor: f64, skip_kk: bool) -> f64 {
     m
 }
 
-struct Checks(Vec<String>);
-
-impl Checks {
-    fn le(&mut self, label: &str, v: f64, tol: f64) {
-        println!("    {label:<48} {v:>12.4e} <= {tol:e}");
-        if !(v <= tol) {
-            self.0.push(format!("{label}: {v:e} > {tol:e}"));
-        }
-    }
-    fn rel(&mut self, label: &str, v: f64, r: f64, tol: f64) {
-        self.le(&format!("{label} ({v} vs {r}), rel"), rel(v, r), tol);
-    }
-    fn abs(&mut self, label: &str, v: f64, r: f64, tol: f64) {
-        self.le(&format!("{label} ({v} vs {r}), abs"), (v - r).abs(), tol);
-    }
-}
-
 #[test]
 fn fd_european() {
-    let mut c = Checks(Vec::new());
+    let mut c = Checks::default();
     let he = fd_hessian::<BsEuroCall>(P);
     let tiny = fd_hessian_bumped::<BsEuroCall>(P, 1e-4);
     let big = fd_hessian_bumped::<BsEuroCall>(P, 1e-2);
@@ -191,12 +161,12 @@ fn fd_european() {
     c.rel("volga", he.get(SIG, SIG), BS[12], 2e-3);
     c.rel("d2/dK2 by bumping the AAD gradient (1%)", big.get(STRIKE, STRIKE), BS[24], 5e-3);
     println!("    AD d2/dK2 = {} (the strike only enters through the kinked payoff)", he.get(STRIKE, STRIKE));
-    assert!(c.0.is_empty(), "{:#?}", c.0);
+    c.assert_ok();
 }
 
 #[test]
 fn fd_american() {
-    let mut c = Checks(Vec::new());
+    let mut c = Checks::default();
     let ha = fd_hessian::<BsAmericanPutSmooth>(P);
     let ha_tiny = fd_hessian_bumped::<BsAmericanPutSmooth>(P, 1e-4);
     let ha_big = fd_hessian_bumped::<BsAmericanPutSmooth>(P, 1e-2);
@@ -210,12 +180,12 @@ fn fd_american() {
     c.rel("hard max gamma vs smoothed gamma", hard.get(S0, S0), ha.get(S0, S0), 2e-3);
     c.rel("d2/dK2 by bumping (hard max vs smoothed)", hard_big.get(STRIKE, STRIKE), ha_big.get(STRIKE, STRIKE), 1e-2);
     println!("    price: hard max {}, smoothed {} (use the hard max for price / first order)", hard.price, ha.price);
-    assert!(c.0.is_empty(), "{:#?}", c.0);
+    c.assert_ok();
 }
 
 #[test]
 fn mc() {
-    let mut c = Checks(Vec::new());
+    let mut c = Checks::default();
     let z = normals();
     let hm = mc_hessian::<GbmCallSmooth>(P, &z);
     let hm_tiny = mc_hessian_bumped::<GbmCallSmooth>(P, &z, 1e-4);
@@ -229,5 +199,5 @@ fn mc() {
     println!("    kinked payoff: AD (pathwise) gamma {} <- misses the Dirac term at the strike", hk.get(S0, S0));
     c.abs("kinked payoff: gamma by bumping (1%)", hkb.get(S0, S0), BS[0], 1.5e-3);
     println!("    price {}", hm.price);
-    assert!(c.0.is_empty(), "{:#?}", c.0);
+    c.assert_ok();
 }

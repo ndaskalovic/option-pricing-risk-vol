@@ -6,7 +6,7 @@
 //! Every output is consumed.
 
 use raad::lanes::{F32x16, F32x32, F64x4, F64x8};
-use raad::{Arr, Dual, FdModel, Grid, Lanes, McModel, Real, fd_greeks, fd_price, mc_greeks};
+use raad::{Arr, Dual, FdModel, Grid, Lanes, McModel, fd_greeks, fd_price, mc_greeks};
 use raad_models::bs_fd::{BsAmericanPut, BsAmericanPutSmooth};
 use raad_models::gbm::GbmCallSmooth;
 use rand::SeedableRng;

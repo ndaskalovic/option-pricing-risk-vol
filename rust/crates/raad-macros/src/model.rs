@@ -2,30 +2,138 @@
 
 use crate::Compiled;
 use crate::front::Shape;
-use proc_macro2::TokenStream;
+use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use syn::spanned::Spanned;
 use syn::{Error, ImplItem, ImplItemFn, ItemFn, ItemImpl, Result};
 
-/// Kernels of the block by name; other items are kept as they are.
-fn kernels<'a>(imp: &mut ItemImpl, names: &[&'a str]) -> Result<Vec<(&'a str, ItemFn)>> {
+/// Expected shape of a kernel parameter or result: `N`, `[N; k]`, or `[N; DIM]` with a
+/// dimension shared across the kernels.
+#[derive(Clone, Copy)]
+enum Dim {
+    Scalar,
+    Fixed(usize),
+    Var(&'static str),
+}
+
+/// Expected signature of one kernel: parameters (name, shape, `#[data]`) and result.
+struct Spec {
+    name: &'static str,
+    params: &'static [(&'static str, Dim, bool)],
+    ret: Dim,
+}
+
+const MC: [Spec; 4] = [
+    Spec { name: "setup", params: &[("p", Dim::Var("NP"), false), ("n_steps", Dim::Scalar, true)], ret: Dim::Var("NC") },
+    Spec { name: "init", params: &[("p", Dim::Var("NP"), false)], ret: Dim::Var("NS") },
+    Spec {
+        name: "step",
+        params: &[("s", Dim::Var("NS"), false), ("c", Dim::Var("NC"), false), ("z", Dim::Var("NZ"), true)],
+        ret: Dim::Var("NS"),
+    },
+    Spec {
+        name: "payoff",
+        params: &[("s", Dim::Var("NS"), false), ("p", Dim::Var("NP"), false), ("c", Dim::Var("NC"), false)],
+        ret: Dim::Scalar,
+    },
+];
+
+const FD: [Spec; 4] = [
+    Spec { name: "coeffs", params: &[("x", Dim::Scalar, true), ("p", Dim::Var("NP"), false)], ret: Dim::Fixed(3) },
+    Spec { name: "payoff", params: &[("x", Dim::Scalar, true), ("p", Dim::Var("NP"), false)], ret: Dim::Scalar },
+    Spec { name: "spot", params: &[("p", Dim::Var("NP"), false)], ret: Dim::Scalar },
+    Spec { name: "maturity", params: &[("p", Dim::Var("NP"), false)], ret: Dim::Scalar },
+];
+
+fn dim_str(d: Dim) -> String {
+    match d {
+        Dim::Scalar => "N".into(),
+        Dim::Fixed(k) => format!("[N; {k}]"),
+        Dim::Var(v) => format!("[N; {v}]"),
+    }
+}
+
+impl Spec {
+    fn signature(&self) -> String {
+        let ps: Vec<String> = self
+            .params
+            .iter()
+            .map(|(n, d, data)| format!("{}{n}: {}", if *data { "#[data] " } else { "" }, dim_str(*d)))
+            .collect();
+        format!("`{}({}) -> {}`", self.name, ps.join(", "), dim_str(self.ret))
+    }
+}
+
+/// Kernels of the block in `specs` order, compiled; other items are kept as they are.
+fn compile_all(imp: &ItemImpl, specs: &[Spec]) -> Result<Vec<Compiled>> {
     if imp.trait_.is_some() {
         return Err(Error::new(imp.span(), "put the model attribute on an inherent `impl Model { ... }` block"));
     }
-    let mut found = Vec::new();
-    for item in &imp.items {
-        if let ImplItem::Fn(f) = item {
-            if let Some(n) = names.iter().find(|n| f.sig.ident == **n) {
-                found.push((*n, to_item_fn(f)));
+    let mut out = Vec::new();
+    let mut errors: Option<Error> = None;
+    for spec in specs {
+        let found = imp.items.iter().find_map(|it| match it {
+            ImplItem::Fn(f) if f.sig.ident == spec.name => Some(f),
+            _ => None,
+        });
+        let r = match found {
+            Some(f) => compile(spec.name, to_item_fn(f)),
+            None => Err(Error::new(imp.self_ty.span(), format!("missing kernel {}", spec.signature()))),
+        };
+        match r {
+            Ok(c) => out.push(c),
+            Err(e) => match &mut errors {
+                Some(all) => all.combine(e),
+                None => errors = Some(e),
+            },
+        }
+    }
+    errors.map_or(Ok(out), Err)
+}
+
+/// Check every kernel against its spec, reporting each mismatch at the offending type;
+/// returns the shared dimensions.
+fn check(specs: &[Spec], ks: &[Compiled]) -> Result<Vec<(&'static str, usize)>> {
+    // dimension -> (length, kernel that fixed it)
+    let mut dims: Vec<(&'static str, usize, &'static str)> = Vec::new();
+    let mut errors: Vec<Error> = Vec::new();
+    for (spec, k) in specs.iter().zip(ks) {
+        let sig = spec.signature();
+        if k.params.len() != spec.params.len() {
+            errors.push(Error::new(k.source.sig.paren_token.span.join(), format!("expected {sig}")));
+            continue;
+        }
+        let mut shape = |d: Dim, s: Shape, span: Span| {
+            let found = match (d, s) {
+                (Dim::Scalar, Shape::Scalar) => return,
+                (Dim::Fixed(k), Shape::Array(n)) if k == n => return,
+                (Dim::Var(v), Shape::Array(n)) => match dims.iter().find(|(w, ..)| *w == v) {
+                    None => return dims.push((v, n, spec.name)),
+                    Some(&(_, m, _)) if m == n => return,
+                    Some(&(_, m, from)) => format!("`[N; {m}]` ({v}, as in `{from}`)"),
+                },
+                _ => format!("`{}`", dim_str(d)),
+            };
+            errors.push(Error::new(span, format!("expected {found} in {sig}")));
+        };
+        for (&(_, d, _), p) in spec.params.iter().zip(&k.params) {
+            shape(d, p.shape, p.span);
+        }
+        shape(spec.ret, k.ret, k.ret_span);
+        for (&(name, _, data), p) in spec.params.iter().zip(&k.params) {
+            if p.data != data {
+                let msg = if data { "must be `#[data]`" } else { "must not be `#[data]`" };
+                errors.push(Error::new(p.span, format!("`{name}` {msg} in {sig}")));
             }
         }
     }
-    for n in names {
-        if !found.iter().any(|(m, _)| m == n) {
-            return Err(Error::new(imp.self_ty.span(), format!("missing kernel `{n}`")));
-        }
+    match errors.into_iter().reduce(|mut a, b| {
+        a.combine(b);
+        a
+    }) {
+        Some(e) => Err(e),
+        None => Ok(dims.into_iter().map(|(v, n, _)| (v, n)).collect()),
     }
-    Ok(found)
 }
 
 fn to_item_fn(f: &ImplItemFn) -> ItemFn {
@@ -33,21 +141,14 @@ fn to_item_fn(f: &ImplItemFn) -> ItemFn {
 }
 
 /// Replace each kernel in the block by its rewritten (generic-valid) source.
-fn replace_sources(imp: &mut ItemImpl, compiled: &[(&str, Compiled)]) {
+fn replace_sources(imp: &mut ItemImpl, compiled: &[Compiled]) {
     for item in imp.items.iter_mut() {
-        if let ImplItem::Fn(f) = item {
-            if let Some((_, c)) = compiled.iter().find(|(n, _)| f.sig.ident == *n) {
-                f.sig = c.source.sig.clone();
-                f.block = (*c.source.block).clone();
-            }
+        if let ImplItem::Fn(f) = item
+            && let Some(c) = compiled.iter().find(|c| f.sig.ident == c.source.sig.ident)
+        {
+            f.sig = c.source.sig.clone();
+            f.block = (*c.source.block).clone();
         }
-    }
-}
-
-fn len(s: Shape, what: &str, span: proc_macro2::Span) -> Result<usize> {
-    match s {
-        Shape::Array(n) => Ok(n),
-        Shape::Scalar => Err(Error::new(span, format!("{what} must be an array `[N; LEN]`"))),
     }
 }
 
@@ -56,22 +157,15 @@ fn compile(name: &str, f: ItemFn) -> Result<Compiled> {
     crate::compile(f, "", [&n("eval"), &n("vjp"), &n("fwd"), &n("bwd")])
 }
 
+fn dim(dims: &[(&str, usize)], v: &str) -> usize {
+    dims.iter().find(|(w, _)| *w == v).unwrap().1
+}
+
 pub fn mc(mut imp: ItemImpl) -> Result<TokenStream> {
-    let ks = kernels(&mut imp, &["setup", "init", "step", "payoff"])?;
-    let sp = imp.self_ty.span();
-    let mut c = Vec::new();
-    for (name, f) in ks {
-        c.push((name, compile(name, f)?));
-    }
-    let get = |n: &str| &c.iter().find(|(m, _)| *m == n).unwrap().1;
-    let (setup, init, step, payoff) = (get("setup"), get("init"), get("step"), get("payoff"));
-    if setup.shapes.len() != 2 || init.shapes.len() != 1 || step.shapes.len() != 3 || payoff.shapes.len() != 3 {
-        return Err(Error::new(sp, "expected setup(p, n_steps), init(p), step(s, c, z), payoff(s, p, c)"));
-    }
-    let np = len(setup.shapes[0], "setup's parameters", sp)?;
-    let nc = len(setup.ret, "setup's result", sp)?;
-    let ns = len(init.ret, "init's result", sp)?;
-    let nz = len(step.shapes[2], "step's normals", sp)?;
+    let c = compile_all(&imp, &MC)?;
+    let dims = check(&MC, &c)?;
+    let [np, nc, ns, nz] = ["NP", "NC", "NS", "NZ"].map(|v| dim(&dims, v));
+    let [setup, init, step, payoff] = [&c[0], &c[1], &c[2], &c[3]];
     let nres = step.nres;
     let (se, sv, ie, iv) = (&setup.eval, &setup.vjp, &init.eval, &init.vjp);
     let (te, tf, tb, pe, pv) = (&step.eval, &step.fwd, &step.bwd, &payoff.eval, &payoff.vjp);
@@ -95,21 +189,8 @@ pub fn mc(mut imp: ItemImpl) -> Result<TokenStream> {
 }
 
 pub fn fd(mut imp: ItemImpl) -> Result<TokenStream> {
-    let ks = kernels(&mut imp, &["coeffs", "payoff", "spot", "maturity"])?;
-    let sp = imp.self_ty.span();
-    let mut c = Vec::new();
-    for (name, f) in ks {
-        c.push((name, compile(name, f)?));
-    }
-    let get = |n: &str| &c.iter().find(|(m, _)| *m == n).unwrap().1;
-    let (coeffs, payoff, spot, maturity) = (get("coeffs"), get("payoff"), get("spot"), get("maturity"));
-    if coeffs.shapes.len() != 2 || payoff.shapes.len() != 2 || spot.shapes.len() != 1 || maturity.shapes.len() != 1 {
-        return Err(Error::new(sp, "expected coeffs(x, p), payoff(x, p), spot(p), maturity(p)"));
-    }
-    if coeffs.ret != Shape::Array(3) {
-        return Err(Error::new(sp, "coeffs returns `[N; 3]`: a, b, c of V_tau = a V_xx + b V_x - c V"));
-    }
-    let np = len(spot.shapes[0], "spot's parameters", sp)?;
+    let c = compile_all(&imp, &FD)?;
+    let np = dim(&check(&FD, &c)?, "NP");
     // the engine constants move from the inherent block to the trait impl
     let mut consts = Vec::new();
     imp.items.retain(|it| match it {
@@ -121,7 +202,7 @@ pub fn fd(mut imp: ItemImpl) -> Result<TokenStream> {
         }
         _ => true,
     });
-    let fns = [coeffs, payoff, spot, maturity].map(|k| {
+    let fns = c.iter().map(|k| {
         let (e, v) = (&k.eval, &k.vjp);
         quote!(#e #v)
     });

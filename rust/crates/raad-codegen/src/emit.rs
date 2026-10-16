@@ -113,10 +113,16 @@ pub fn function(g: &Graph, sig: &Signature, kind: Kind, vis: &str, name: &str) -
         params.extend(sig.groups.iter().filter(|g| !g.data).map(|g| sig.adj_param(g)));
     }
     let ret = if kind == Kind::Bwd { String::new() } else { format!(" -> {}", sig.out_ty()) };
+    let doc = match kind {
+        Kind::Eval => "The kernel's result.",
+        Kind::Vjp => "The kernel's result; adds `Jᵀ a_y` to the input adjoints.",
+        Kind::Fwd => "The kernel's result; saves the residuals `bwd` reads to `res`.",
+        Kind::Bwd => "Adds `Jᵀ a_y` to the input adjoints, from the residuals `fwd` saved.",
+    };
     let mut s = String::new();
     writeln!(
         s,
-        "#[inline(always)]\n#[allow(unused_variables, unused_mut, clippy::all)]\n{vis} fn {name}<R: ::raad::Real>({}){ret} {{",
+        "#[doc = {doc:?}]\n#[inline(always)]\n#[allow(unused_variables, unused_mut, clippy::all)]\n{vis} fn {name}<R: ::raad::Real>({}){ret} {{",
         params.join(", ")
     )
     .unwrap();
@@ -148,10 +154,10 @@ pub fn function(g: &Graph, sig: &Signature, kind: Kind, vis: &str, name: &str) -
                 writeln!(s, "    let v{r}: R = res[{k}];").unwrap();
             }
             for (i, n) in g.nodes.iter().enumerate() {
-                if let Op::Data(j) = n.op {
-                    if an.reads[i] {
-                        writeln!(s, "    let v{i}: R = {};", sig.slot(j, true).0).unwrap();
-                    }
+                if let Op::Data(j) = n.op
+                    && an.reads[i]
+                {
+                    writeln!(s, "    let v{i}: R = {};", sig.slot(j, true).0).unwrap();
                 }
             }
             e.reverse(&mut s);

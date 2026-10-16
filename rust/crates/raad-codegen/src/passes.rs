@@ -17,7 +17,7 @@ pub fn active(g: &Graph) -> Vec<bool> {
 }
 
 /// Node reaches an output through a differentiable operand (the mask operands of
-/// `SelGt` receive no adjoint).
+/// `SelGt` and the operand of `Stop` receive no adjoint).
 pub fn useful(g: &Graph) -> Vec<bool> {
     let mut use_ = vec![false; g.len()];
     for &o in &g.outs {
@@ -25,7 +25,7 @@ pub fn useful(g: &Graph) -> Vec<bool> {
     }
     for i in (0..g.len()).rev() {
         let n = &g.nodes[i];
-        if !use_[i] || n.is_leaf() {
+        if !use_[i] || n.is_leaf() || n.op == Op::Stop {
             continue;
         }
         if n.op == Op::SelGt {
@@ -161,5 +161,20 @@ mod tests {
         assert!(!an.need[e], "mask operand needs no adjoint");
         assert!(an.live[e], "mask operand is still evaluated");
         assert_eq!(an.res, vec![y, e]);
+    }
+
+    /// stop-gradient: the detached subgraph is evaluated but needs no adjoints or residuals.
+    #[test]
+    fn stop() {
+        let mut g = Graph::default();
+        let x = g.push(Op::Input(0), NONE, NONE, NONE, NONE);
+        let e = g.push(Op::Exp, x, NONE, NONE, NONE);
+        let s = g.push(Op::Stop, e, NONE, NONE, NONE);
+        let y = g.push(Op::Mul, s, x, NONE, NONE);
+        g.outs.push(y);
+        let an = Analysis::new(&g);
+        assert_eq!(an.need, vec![true, false, false, true]);
+        assert!(an.live[e]);
+        assert_eq!(an.res, vec![s], "only the detached value is saved, not exp(x)");
     }
 }

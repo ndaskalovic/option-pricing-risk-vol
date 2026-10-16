@@ -128,9 +128,9 @@ fn every_op() {
                 e_hess = e_hess.max(worst(ad[i].t - fd, fd));
             }
         }
-        for i in 0..4 {
-            for j in i + 1..4 {
-                e_sym = e_sym.max(worst(hess[i][j] - hess[j][i], hess[i][j]));
+        for (i, row) in hess.iter().enumerate() {
+            for (j, &hij) in row.iter().enumerate().skip(i + 1) {
+                e_sym = e_sym.max(worst(hij - hess[j][i], hij));
             }
         }
     }

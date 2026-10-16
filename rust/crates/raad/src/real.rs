@@ -150,7 +150,7 @@ impl<L: Lanes> AdNum for Dual<L> {
     #[inline(always)]
     fn relu(self) -> Self {
         let z = L::from(0.0);
-        Dual { v: L::select_gt(self.v, z, self.v, z), t: L::select_gt(self.v, z, self.t, z) }
+        Dual { v: self.v.relu(), t: L::select_gt(self.v, z, self.t, z) }
     }
     #[inline(always)]
     fn detach(self) -> Self {

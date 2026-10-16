@@ -22,7 +22,7 @@ impl AdNum for f64 {
     }
     #[inline(always)]
     fn relu(self) -> f64 {
-        if self > 0.0 { self } else { 0.0 }
+        if self < 0.0 { 0.0 } else { self }
     }
     #[inline(always)]
     fn detach(self) -> f64 {

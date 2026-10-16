@@ -4,7 +4,7 @@
 use raad_codegen::emit::{self, Kind};
 use raad_codegen::{Group, Signature};
 use proc_macro::TokenStream;
-use proc_macro2::TokenStream as Tokens;
+use proc_macro2::{Span, TokenStream as Tokens};
 use quote::quote;
 use syn::spanned::Spanned;
 use syn::{Error, FnArg, ItemFn, Pat, Result, ReturnType, Type};
@@ -53,9 +53,12 @@ pub fn fd_model(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// Keeps the function (callable on any `AdNum`: `f64`, SIMD packs, `Dual`, the tracer) and
 /// adds a module of the same name with `eval`, `vjp`, `fwd`, `bwd`, `NRES` and `graph`.
 /// Parameters are `N` or `[N; LITERAL]`; `#[data]` marks non-differentiable ones.
-/// The body is `let` bindings and a final value using `+ - * /`, `exp ln sqrt powf relu
-/// detach maximum minimum smooth_relu`, `N::select_gt(a, b, x, y)`, `N::from(k)`, integer
-/// literal indices and `f64` constants.
+/// The body is `let` bindings, assignments and a final value using `+ - * /`, `exp ln sqrt
+/// powf relu detach maximum minimum smooth_relu`, `N::select_gt(a, b, x, y)`, `N::from(k)`,
+/// integer literal indices and `f64` constants: literals, paths (`Self::EPS`,
+/// `std::f64::consts::PI`) and SCREAMING_CASE names; any other bare name must be a parameter
+/// or a local. Parameter names `y`, `res`, `a_*`, and `v` or `a` followed by digits are
+/// reserved by the generated code.
 #[proc_macro_attribute]
 pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
     if !attr.is_empty() {
@@ -68,9 +71,10 @@ pub fn kernel(attr: TokenStream, item: TokenStream) -> TokenStream {
 /// A compiled kernel: the rewritten source function and the generated items.
 pub(crate) struct Compiled {
     pub source: ItemFn,
-    /// Parameter shapes in signature order, and the result shape.
-    pub shapes: Vec<Shape>,
+    /// Parameters in signature order, and the result shape and type span.
+    pub params: Vec<Param>,
     pub ret: Shape,
+    pub ret_span: Span,
     pub eval: Tokens,
     pub vjp: Tokens,
     pub fwd: Tokens,
@@ -99,6 +103,7 @@ fn kernel_fn(f: ItemFn) -> Result<Tokens> {
             #fwd
             #bwd
             /// The kernel graph (for tests against the tracer).
+            #[doc(hidden)]
             pub fn graph() -> ::raad::codegen::Graph { #graph }
         }
     })
@@ -135,13 +140,16 @@ pub(crate) fn compile(mut f: ItemFn, vis: &str, names: [&str; 4]) -> Result<Comp
         pt.attrs.retain(|a| !a.path().is_ident("data"));
         let Pat::Ident(id) = &*pt.pat else { return Err(Error::new(pt.pat.span(), "parameters must be plain names")) };
         let name = id.ident.to_string();
-        if name == "res" || name.starts_with("a_") || is_temp(&name) {
-            return Err(Error::new(id.span(), "this parameter name is reserved by the generated code"));
+        if is_reserved(&name) {
+            return Err(Error::new(
+                id.span(),
+                format!("parameter name `{name}` is reserved by the generated code (reserved: `y`, `res`, `a_*`, `v` or `a` followed by digits)"),
+            ));
         }
-        params.push(Param { name, shape: shape(&pt.ty, &n)?, data });
+        params.push(Param { name, shape: shape(&pt.ty, &n)?, data, span: pt.ty.span() });
     }
-    let ret = match &f.sig.output {
-        ReturnType::Type(_, t) => shape(t, &n)?,
+    let (ret, ret_span) = match &f.sig.output {
+        ReturnType::Type(_, t) => (shape(t, &n)?, t.span()),
         ReturnType::Default => return Err(Error::new(f.sig.span(), "a kernel returns `N` or `[N; LEN]`")),
     };
     let mut b = Builder::new(&params);
@@ -176,11 +184,12 @@ pub(crate) fn compile(mut f: ItemFn, vis: &str, names: [&str; 4]) -> Result<Comp
     let nres = emit::nres(&b.g);
     let graph = b.graph_code();
     *f.block = syn::parse2(quote!({ #body }))?;
-    let shapes = params.iter().map(|p| p.shape).collect();
-    Ok(Compiled { source: f, shapes, ret, eval, vjp, fwd, bwd, nres, graph })
+    Ok(Compiled { source: f, params, ret, ret_span, eval, vjp, fwd, bwd, nres, graph })
 }
 
-fn is_temp(s: &str) -> bool {
-    let mut c = s.chars();
-    matches!(c.next(), Some('v') | Some('a')) && !s[1..].is_empty() && s[1..].chars().all(|c| c.is_ascii_digit())
+/// Names the generated code uses next to the parameters: `res` (residuals), `a_y` and
+/// `a_<param>` (adjoints), `v<i>` and `a<i>` (node values and adjoints).
+fn is_reserved(s: &str) -> bool {
+    let temp = s.len() > 1 && s.starts_with(['v', 'a']) && s[1..].bytes().all(|c| c.is_ascii_digit());
+    s == "y" || s == "res" || s.starts_with("a_") || temp
 }

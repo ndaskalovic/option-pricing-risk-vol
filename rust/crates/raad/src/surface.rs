@@ -125,13 +125,14 @@ impl<R: Real> FdSurface<R> {
         ]
     }
 
-    /// u, u_x, u_xx at maturity index `m`, per-lane coordinate `x`.
+    /// u, u_x, u_xx at maturity index `m`, per-lane coordinate `x`. Panics if `m` is out of range.
     pub fn read(&self, m: usize, x: R::Lanes) -> [R; 3] {
         self.read_buf(&self.slices, m, x)
     }
 
     /// Unit-strike model on x = log(S/K): price, delta, gamma, theta (dV/dt, calendar time),
     /// dV/dK. Theta comes from the PDE (`u_τ = L u` on continuation nodes): no dt error.
+    /// Panics if `m` is out of range.
     pub fn option(&self, m: usize, spot: R::Lanes, strike: R::Lanes) -> [R; 5] {
         let x = (spot / strike).ln();
         let r = self.read_buf(&self.slices, m, x);
@@ -151,6 +152,9 @@ fn surface_core<M: FdModel, R: Real, const GRADS: bool>(
     a_p: &mut M::P<R>,
 ) -> FdSurface<R> {
     let nx = g.nx;
+    assert!(nx >= 5, "need at least 5 grid nodes");
+    assert!(!maturities.is_empty(), "need at least 1 maturity");
+    assert!(points.iter().all(|pt| pt.m < maturities.len()), "SurfacePoint::m out of range");
     let mut sc = Scheme::<M, R>::new(p, g.x_lo, g.x_hi, nx, GRADS);
     let bl = schedule(maturities, g.dt, g.rannacher);
     let last = bl[bl.len() - 1];
@@ -222,6 +226,10 @@ fn surface_core<M: FdModel, R: Real, const GRADS: bool>(
 }
 
 /// Solution at every maturity in one solve.
+///
+/// # Panics
+///
+/// If `grid.nx < 5`, `maturities` is empty or not positive and strictly increasing.
 pub fn fd_surface<M: FdModel, R: Real>(params: &M::P<R>, grid: &SurfaceGrid, maturities: &[f64]) -> FdSurface<R> {
     let mut a: M::P<R> = Arr::splat(R::from(0.0));
     surface_core::<M, R, false>(params, grid, maturities, &[], &mut a)
@@ -240,6 +248,10 @@ pub struct FdBook<R, G> {
 /// A book of surface reads `Σ_k w_k u(x_k, T_{m_k})` and its gradient w.r.t. every model
 /// parameter in one reverse sweep (per lane). For a unit-strike model `w_k = position_k · K_k`.
 /// With [`Dual`](crate::Dual) the gradient tangents are Hessian-vector products of the book.
+///
+/// # Panics
+///
+/// As [`fd_surface`], or if a point's maturity index `m` is out of range.
 pub fn fd_surface_book<M: FdModel, R: Real>(
     params: &M::P<R>,
     grid: &SurfaceGrid,

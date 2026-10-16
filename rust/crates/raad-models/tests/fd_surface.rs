@@ -3,12 +3,18 @@
 //! 2. Dual tangents (vega, rho) == central bumps of the surface (European exact, American)
 //! 3. American book: reverse-sweep gradient == sum of position-weighted forward tangents
 //! 4. American surface prices vs the single-option engine (fd_price, BsAmericanPut)
+//!
+//! Also: book gradient == forward tangents for W = 2 lanes with different points, every
+//! Rannacher count and one or several maturities; the argument checks.
 
 use raad::lanes::{F64x2, F64x4};
 use raad::{Dual, FdSurface, Grid, Lanes, SurfaceGrid, SurfacePoint, fd_price, fd_surface, fd_surface_book};
 use raad_models::bs_fd::{BsAmericanPut, BsPutMoneyness};
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
+
+mod common;
+use common::{Checks, rel};
 
 const S0: f64 = 100.0;
 const R_: f64 = 0.03;
@@ -54,19 +60,12 @@ fn bs_put(k: f64, t: f64) -> [f64; 7] {
     ]
 }
 
-fn check(fails: &mut Vec<String>, label: &str, err: f64, tol: f64) {
-    println!("    {label}: max err {err:e} (tol {tol:e})");
-    if !(err <= tol) {
-        fails.push(format!("{label}: {err:e} > {tol:e}"));
-    }
-}
-
 /// Lane 0 tangent = d/dsigma, lane 1 = d/dr.
 fn dual_params() -> [D2; 3] {
     [D2::new(F64x2::from(R_), F64x2::from_fn(|l| l as f64)), D2::from(Q_), D2::new(F64x2::from(SIG), F64x2::from_fn(|l| 1.0 - l as f64))]
 }
 
-fn tangent_vs_bump<const AM: bool>(fails: &mut Vec<String>, g: &SurfaceGrid, rel: f64) {
+fn tangent_vs_bump<const AM: bool>(c: &mut Checks, g: &SurfaceGrid, rel: f64) {
     let sa = fd_surface::<BsPutMoneyness<AM>, D2>(&dual_params(), g, &T);
     let eps = 1e-6;
     let bumped: Vec<FdSurface<f64>> = [(0.0, eps), (0.0, -eps), (eps, 0.0), (-eps, 0.0)]
@@ -86,13 +85,13 @@ fn tangent_vs_bump<const AM: bool>(fails: &mut Vec<String>, g: &SurfaceGrid, rel
         }
     }
     let lab = if AM { "American" } else { "European" };
-    check(fails, &format!("{lab} vega Dual vs bump (rel to max |vega|)"), ev / vscale, rel);
-    check(fails, &format!("{lab} rho Dual vs bump (rel to max |rho|)"), er / rscale, rel);
+    c.le(&format!("{lab} vega Dual vs bump (rel to max |vega|)"), ev / vscale, rel);
+    c.le(&format!("{lab} rho Dual vs bump (rel to max |rho|)"), er / rscale, rel);
 }
 
 #[test]
 fn fd_surface_engine() {
-    let mut fails = Vec::new();
+    let mut c = Checks::default();
     let ks = strikes();
 
     // 1. European vs closed form
@@ -113,15 +112,15 @@ fn fd_surface_engine() {
     let names = ["price", "delta", "gamma", "theta", "dV/dK", "vega (Dual)", "rho (Dual)"];
     let tols = [2e-3, 2e-4, 2e-4, 5e-2, 2e-4, 2e-2, 2e-3];
     for i in 0..7 {
-        check(&mut fails, names[i], emax[i], tols[i]);
+        c.le(names[i], emax[i], tols[i]);
     }
 
     // 2. Dual tangents == central bumps of the same scheme (European: exact; American: the
     //    tangent holds the exercise set fixed, a bump of 1e-6 can flip a node)
     println!("2. Dual vega/rho == central bumps (h 0.005, dt 1/500)");
     let g2 = grid(0.005, 1.0 / 500.0);
-    tangent_vs_bump::<false>(&mut fails, &g2, 5e-7);
-    tangent_vs_bump::<true>(&mut fails, &g2, 1e-5);
+    tangent_vs_bump::<false>(&mut c, &g2, 5e-7);
+    tangent_vs_bump::<true>(&mut c, &g2, 1e-5);
 
     // 3. American book: one reverse sweep == position-weighted forward tangents
     println!("3. American book ({} options, random positions): reverse sweep vs forward tangents", T.len() * ks.len());
@@ -149,10 +148,10 @@ fn fd_surface_engine() {
             val += w * u.v.lane(0);
         }
     }
-    check(&mut fails, "book value vs forward", (book.value - val).abs() / val.abs(), 1e-12);
+    c.le("book value vs forward", (book.value - val).abs() / val.abs(), 1e-12);
     for (j, name) in ["dbook/dr", "dbook/dq", "dbook/dsigma"].iter().enumerate() {
         println!("      {name} reverse {} forward {}", book.grad[j], fwd[j]);
-        check(&mut fails, &format!("{name} rel"), (book.grad[j] - fwd[j]).abs() / fwd[j].abs(), 1e-10);
+        c.le(&format!("{name} rel"), (book.grad[j] - fwd[j]).abs() / fwd[j].abs(), 1e-10);
     }
 
     // 4. American surface vs the single-option engine (q = 0)
@@ -167,6 +166,74 @@ fn fd_surface_engine() {
             e4 = e4.max((s0.option(m, S0, k)[0] - single).abs());
         }
     }
-    check(&mut fails, "price vs single-option engine (abs, S=100)", e4, 2e-3);
-    assert!(fails.is_empty(), "{fails:#?}");
+    c.le("price vs single-option engine (abs, S=100)", e4, 2e-3);
+    c.assert_ok();
+}
+
+/// Book gradient (reverse) vs forward Dual tangents: W = 2 lanes with different reads and
+/// weights, for a Rannacher count and maturity list. Max relative error.
+fn book_vs_tangents<const AM: bool>(rannacher: usize, mats: &[f64]) -> f64 {
+    let g = SurfaceGrid { x_lo: -1.5, x_hi: 1.5, nx: 241, dt: 1.0 / 200.0, rannacher };
+    let p = [R_, Q_, SIG];
+    let mut rng = StdRng::seed_from_u64(11);
+    let pts: Vec<SurfacePoint<F64x2>> = (0..5 * mats.len())
+        .map(|k| SurfacePoint {
+            m: k % mats.len(),
+            x: F64x2::from_fn(|_| rng.random_range(-0.4..0.4)),
+            w: F64x2::from_fn(|_| rng.random_range(-5.0..5.0)),
+        })
+        .collect();
+    let book = fd_surface_book::<BsPutMoneyness<AM>, F64x2>(&p.map(F64x2::from), &g, mats, &pts);
+    let mut e = 0.0f64;
+    for j in 0..3 {
+        let pd: [D2; 3] = std::array::from_fn(|i| D2::new(F64x2::from(p[i]), F64x2::from(if i == j { 1.0 } else { 0.0 })));
+        let s = fd_surface::<BsPutMoneyness<AM>, D2>(&pd, &g, mats);
+        let fwd = pts.iter().fold(F64x2::from(0.0), |f, pt| f + pt.w * s.read(pt.m, pt.x)[0].t);
+        for l in 0..2 {
+            e = e.max(rel(book.grad[j].lane(l), fwd.lane(l)));
+        }
+    }
+    e
+}
+
+#[test]
+fn book_lanes_rannacher_maturities() {
+    let mut c = Checks::default();
+    for rannacher in [0, 1, 2] {
+        for mats in [&[0.5][..], &[0.1, 0.3, 1.0][..]] {
+            let label = format!("rannacher {rannacher}, maturities {mats:?}");
+            c.le(&format!("European {label}"), book_vs_tangents::<false>(rannacher, mats), 1e-11);
+            c.le(&format!("American {label}"), book_vs_tangents::<true>(rannacher, mats), 1e-11);
+        }
+    }
+    c.assert_ok();
+}
+
+fn small_grid(nx: usize) -> SurfaceGrid {
+    SurfaceGrid { x_lo: -1.0, x_hi: 1.0, nx, dt: 0.1, rannacher: 0 }
+}
+
+#[test]
+fn surface_five_nodes() {
+    let s = fd_surface::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &small_grid(5), &[0.5]);
+    assert!(s.read(0, 0.0)[0].is_finite());
+}
+
+#[test]
+#[should_panic(expected = "need at least 5 grid nodes")]
+fn surface_four_nodes() {
+    fd_surface::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &small_grid(4), &[0.5]);
+}
+
+#[test]
+#[should_panic(expected = "need at least 1 maturity")]
+fn surface_no_maturities() {
+    fd_surface::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &grid(0.01, 0.01), &[]);
+}
+
+#[test]
+#[should_panic(expected = "SurfacePoint::m out of range")]
+fn book_maturity_out_of_range() {
+    let pts = [SurfacePoint { m: 1, x: 0.0, w: 1.0 }];
+    fd_surface_book::<BsPutMoneyness<false>, f64>(&[R_, Q_, SIG], &grid(0.01, 0.01), &[0.5], &pts);
 }

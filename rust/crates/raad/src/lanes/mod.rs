@@ -45,43 +45,93 @@ pub trait Lanes: Real<Lanes = Self> + Debug + PartialEq {
 
 /// Polynomial `exp` shared by the vector backends: `exp(x) = 2^n · p(r)`, `n = round(x / ln2)`,
 /// `r = x - n·ln2` (two-constant Cody-Waite), `p` the Taylor polynomial in FMA Horner form.
-/// Max relative error ≈ 2e-7 (`f32`, degree 6) and ≈ 6e-16 (`f64`, degree 12) on the clamped range.
+/// Max relative error ≈ 2e-7 (`f32`, degree 6) and ≈ 6e-16 (`f64`, degree 12).
+///
+/// `x` is clamped to `[LO, HI]` first (NaN passes through). `HI` lies just above
+/// `ln(MAX)`, so results are finite up to the true overflow threshold and `+inf` above it.
+/// Two ways to apply `2^n`:
+/// - `bits` (NEON, AVX2): exponent-bit arithmetic, with the coefficients doubled and the
+///   scale `2^(n-1)` so that `n = 128` (`f64`: 1024) is representable. The lowest `n` gives an
+///   exponent field of 0, i.e. 0: results below `2^-125.5` (`x < -86.99`; `f64`: `2^-1021.5`,
+///   `x < -708.05`) flush to 0, subnormals and the bottom half binade of normals alike.
+/// - `scalef` (AVX-512): `vscalef` applies `2^n` with correct rounding, overflow to `+inf`
+///   and gradual underflow.
 #[cfg(any(
     target_arch = "aarch64",
     all(target_arch = "x86_64", target_feature = "avx2", target_feature = "fma")
 ))]
 pub(crate) mod exp_poly {
     pub mod f32 {
-        pub const LO: f32 = -87.0;
-        pub const HI: f32 = 88.0;
         pub const LOG2E: f32 = std::f32::consts::LOG2_E;
         pub const LN2_HI: f32 = 0.693_145_75;
         pub const LN2_LO: f32 = 1.428_606_8e-6;
-        /// Highest degree first.
-        pub const P: [f32; 7] = [1.0 / 720.0, 1.0 / 120.0, 1.0 / 24.0, 1.0 / 6.0, 0.5, 1.0, 1.0];
+        /// ln(f32::MAX) = 88.72; `n` stays ≤ 128.
+        pub const HI: f32 = 89.0;
+        pub mod bits {
+            pub use super::{HI, LN2_HI, LN2_LO, LOG2E};
+            /// `n = -126` here (exponent field 0 after the bias of 126).
+            pub const LO: f32 = -87.6;
+            /// `2·P`: `p(r) = 2e^r`.
+            pub const P: [f32; 7] = [2.0 / 720.0, 2.0 / 120.0, 2.0 / 24.0, 2.0 / 6.0, 1.0, 2.0, 2.0];
+        }
+        #[cfg(target_feature = "avx512f")]
+        pub mod scalef {
+            pub use super::{HI, LN2_HI, LN2_LO, LOG2E};
+            /// `e^LO < 2^-150` rounds to 0.
+            pub const LO: f32 = -104.5;
+            /// Taylor coefficients of `e^r`, highest degree first.
+            pub const P: [f32; 7] = [1.0 / 720.0, 1.0 / 120.0, 1.0 / 24.0, 1.0 / 6.0, 0.5, 1.0, 1.0];
+        }
     }
     pub mod f64 {
-        pub const LO: f64 = -708.0;
-        pub const HI: f64 = 709.0;
         pub const LOG2E: f64 = std::f64::consts::LOG2_E;
         pub const LN2_HI: f64 = 0.693_145_751_953_125;
-        pub const LN2_LO: f64 = 1.428_606_820_309_417_232_1e-6;
-        /// Highest degree first.
-        pub const P: [f64; 13] = [
-            1.0 / 479_001_600.0,
-            1.0 / 39_916_800.0,
-            1.0 / 3_628_800.0,
-            1.0 / 362_880.0,
-            1.0 / 40_320.0,
-            1.0 / 5_040.0,
-            1.0 / 720.0,
-            1.0 / 120.0,
-            1.0 / 24.0,
-            1.0 / 6.0,
-            0.5,
-            1.0,
-            1.0,
-        ];
+        pub const LN2_LO: f64 = 1.428_606_820_309_417_3e-6;
+        /// ln(f64::MAX) = 709.78; `n` stays ≤ 1024.
+        pub const HI: f64 = 710.0;
+        pub mod bits {
+            pub use super::{HI, LN2_HI, LN2_LO, LOG2E};
+            /// `n = -1022` here (exponent field 0 after the bias of 1022).
+            pub const LO: f64 = -708.7;
+            /// `2·P`: `p(r) = 2e^r`.
+            pub const P: [f64; 13] = [
+                2.0 / 479_001_600.0,
+                2.0 / 39_916_800.0,
+                2.0 / 3_628_800.0,
+                2.0 / 362_880.0,
+                2.0 / 40_320.0,
+                2.0 / 5_040.0,
+                2.0 / 720.0,
+                2.0 / 120.0,
+                2.0 / 24.0,
+                2.0 / 6.0,
+                1.0,
+                2.0,
+                2.0,
+            ];
+        }
+        #[cfg(target_feature = "avx512f")]
+        pub mod scalef {
+            pub use super::{HI, LN2_HI, LN2_LO, LOG2E};
+            /// `e^LO < 2^-1075` rounds to 0.
+            pub const LO: f64 = -746.0;
+            /// Taylor coefficients of `e^r`, highest degree first.
+            pub const P: [f64; 13] = [
+                1.0 / 479_001_600.0,
+                1.0 / 39_916_800.0,
+                1.0 / 3_628_800.0,
+                1.0 / 362_880.0,
+                1.0 / 40_320.0,
+                1.0 / 5_040.0,
+                1.0 / 720.0,
+                1.0 / 120.0,
+                1.0 / 24.0,
+                1.0 / 6.0,
+                0.5,
+                1.0,
+                1.0,
+            ];
+        }
     }
 }
 

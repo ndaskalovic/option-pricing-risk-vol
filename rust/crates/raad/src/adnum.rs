@@ -26,7 +26,7 @@ pub trait AdNum:
     fn sqrt(self) -> Self;
     /// `self ** k`
     fn powf(self, k: f64) -> Self;
-    /// `max(self, 0)`
+    /// `max(self, 0)`. NaN propagates on every backend: `relu(NaN) = NaN` (its derivative is 0).
     fn relu(self) -> Self;
     /// Same value, zero derivative (stop-gradient).
     fn detach(self) -> Self;

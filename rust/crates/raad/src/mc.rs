@@ -12,7 +12,7 @@
 //!
 //! Per SIMD path the engine runs the steps forward (saving only the residuals the step's
 //! reverse sweep reads), the payoff fused with its reverse sweep, and the steps backward;
-//! the reverse of `init` and `setup` runs once at the end. Lanes are paths.
+//! the reverse of `init` and `setup` runs once per block of paths. Lanes are paths.
 
 use crate::{Arr, Lanes, Real};
 
@@ -57,16 +57,29 @@ pub struct McResult<G> {
     pub grad_tangent: G,
 }
 
+/// Terms (path blocks × steps) summed in `R` before the sums are flushed into `f64`. Bounds the
+/// accumulation error by the block (not by `n_paths`), which matters for `f32`.
+const FLUSH_TERMS: usize = 4096;
+
 /// Price and gradient (path means) in one pass.
 ///
 /// `normals` holds `n_paths * n_steps * NZ * W` draws (`W` = lanes of `R`): path block `i`
 /// starts at `i * n_steps * NZ * W`, step `k` at `+ k * NZ * W`, draw `j` at `+ j * W`.
 /// `n_paths` counts SIMD path blocks (`W` scalar paths each).
+///
+/// Sums over paths are taken in `R` within blocks of `FLUSH_TERMS / n_steps` (4096 / n_steps) path
+/// blocks, then in `f64`. The reverse of `init` and `setup` is linear in its seeds, so it runs
+/// once per block, on that block's sums.
+///
+/// # Panics
+///
+/// If `n_steps`, `n_paths` or `NZ` is zero, or `normals` is too short.
 pub fn mc_greeks<M: McModel, R: Real>(params: &M::P<R>, n_steps: usize, n_paths: usize, normals: &[f32]) -> McResult<M::P<f64>> {
     let w = R::Lanes::W;
     let nz = <M::Z<R> as Arr<R>>::LEN;
     let nres = M::STEP_NRES;
     let stride = n_steps * nz * w;
+    assert!(n_steps >= 1 && n_paths >= 1 && nz >= 1, "need n_steps, n_paths and NZ >= 1");
     assert!(normals.len() >= n_paths * stride, "need n_paths * n_steps * NZ * W normals");
     let load = |zk: &[f32]| {
         let mut z: M::Z<R> = Arr::splat(R::from(0.0));
@@ -82,40 +95,47 @@ pub fn mc_greeks<M: McModel, R: Real>(params: &M::P<R>, n_steps: usize, n_paths:
     let s0 = M::init_eval(params);
 
     let mut res = vec![R::from(0.0); n_steps * nres];
-    let mut a_c: M::C<R> = Arr::splat(R::from(0.0));
-    let mut a_s0: M::S<R> = Arr::splat(R::from(0.0));
-    let mut a_p: M::P<R> = Arr::splat(R::from(0.0));
-    let mut acc = R::from(0.0);
-    for path in normals.chunks_exact(stride).take(n_paths) {
-        let mut s = s0;
-        for (k, zk) in path.chunks_exact(nz * w).enumerate() {
-            let z = load(zk);
-            s = if nres == 0 { M::step_eval(&s, &c, &z) } else { M::step_fwd(&s, &c, &z, &mut res[k * nres..(k + 1) * nres]) };
-        }
-        let mut a_s: M::S<R> = Arr::splat(R::neg_zero());
-        acc += M::payoff_vjp(&s, params, &c, R::from(1.0), &mut a_s, &mut a_p, &mut a_c);
-        for (k, zk) in path.chunks_exact(nz * w).enumerate().rev() {
-            let z = load(zk);
-            let mut a_prev: M::S<R> = Arr::splat(R::neg_zero());
-            M::step_bwd(&z, &res[k * nres..(k + 1) * nres], &a_s, &mut a_prev, &mut a_c);
-            a_s = a_prev;
-        }
-        for (a0, a) in a_s0.as_mut().iter_mut().zip(a_s.as_ref()) {
-            *a0 += *a;
-        }
-    }
-
-    // reverse through the path-invariant parts once
-    M::init_vjp(params, &a_s0, &mut a_p);
-    M::setup_vjp(params, nd, &a_c, &mut a_p);
-
-    let scale = 1.0 / (n_paths * w) as f64;
-    let mean = |v: R::Lanes| v.sum() * scale;
+    let (mut price, mut price_tangent) = (0.0, 0.0);
     let mut grad: M::P<f64> = Arr::splat(0.0);
     let mut grad_tangent: M::P<f64> = Arr::splat(0.0);
-    for (j, a) in a_p.as_ref().iter().enumerate() {
-        grad.as_mut()[j] = mean(a.value());
-        grad_tangent.as_mut()[j] = mean(a.tangent());
+    let flush = FLUSH_TERMS.div_ceil(n_steps);
+    for block in normals[..n_paths * stride].chunks(flush * stride) {
+        let mut acc = R::neg_zero();
+        let mut a_p: M::P<R> = Arr::splat(R::neg_zero());
+        let mut a_c: M::C<R> = Arr::splat(R::neg_zero());
+        let mut a_s0: M::S<R> = Arr::splat(R::neg_zero());
+        for path in block.chunks_exact(stride) {
+            let mut s = s0;
+            for (k, zk) in path.chunks_exact(nz * w).enumerate() {
+                let z = load(zk);
+                s = if nres == 0 { M::step_eval(&s, &c, &z) } else { M::step_fwd(&s, &c, &z, &mut res[k * nres..(k + 1) * nres]) };
+            }
+            let mut a_s: M::S<R> = Arr::splat(R::neg_zero());
+            acc += M::payoff_vjp(&s, params, &c, R::from(1.0), &mut a_s, &mut a_p, &mut a_c);
+            for (k, zk) in path.chunks_exact(nz * w).enumerate().rev() {
+                let z = load(zk);
+                let mut a_prev: M::S<R> = Arr::splat(R::neg_zero());
+                M::step_bwd(&z, &res[k * nres..(k + 1) * nres], &a_s, &mut a_prev, &mut a_c);
+                a_s = a_prev;
+            }
+            for (a0, a) in a_s0.as_mut().iter_mut().zip(a_s.as_ref()) {
+                *a0 += *a;
+            }
+        }
+
+        M::init_vjp(params, &a_s0, &mut a_p);
+        M::setup_vjp(params, nd, &a_c, &mut a_p);
+        price += acc.value().sum();
+        price_tangent += acc.tangent().sum();
+        for (j, a) in a_p.as_ref().iter().enumerate() {
+            grad.as_mut()[j] += a.value().sum();
+            grad_tangent.as_mut()[j] += a.tangent().sum();
+        }
     }
-    McResult { price: mean(acc.value()), grad, price_tangent: mean(acc.tangent()), grad_tangent }
+
+    let scale = 1.0 / (n_paths * w) as f64;
+    for g in grad.as_mut().iter_mut().chain(grad_tangent.as_mut()) {
+        *g *= scale;
+    }
+    McResult { price: price * scale, grad, price_tangent: price_tangent * scale, grad_tangent }
 }

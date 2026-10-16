@@ -134,7 +134,7 @@ macro_rules! pack {
             }
             #[inline(always)]
             fn relu(self) -> Self {
-                self.map(|a| if a > 0.0 { a } else { 0.0 })
+                self.map(|a| if a < 0.0 { 0.0 } else { a })
             }
             #[inline(always)]
             fn detach(self) -> Self {

@@ -22,6 +22,7 @@ pub(super) const NEAREST: i32 = core::arch::x86_64::_MM_FROUND_TO_NEAREST_INT | 
 /// Register ops for `__m128` (4 × `f32`).
 mod m128 {
     use core::arch::x86_64::*;
+    pub use crate::lanes::exp_poly::f32::bits as exp;
     pub type V = __m128;
     #[inline(always)]
     pub fn splat(k: f32) -> V {
@@ -87,15 +88,17 @@ mod m128 {
     pub fn round(a: V) -> V {
         unsafe { _mm_round_ps::<{ super::NEAREST }>(a) }
     }
+    /// `p·2^(n-1)` through the exponent bits (`exp_poly` `bits`).
     #[inline(always)]
     pub fn scale(p: V, n: V) -> V {
-        unsafe { mul(p, _mm_castsi128_ps(_mm_slli_epi32::<23>(_mm_add_epi32(_mm_cvtps_epi32(n), _mm_set1_epi32(127))))) }
+        unsafe { mul(p, _mm_castsi128_ps(_mm_slli_epi32::<23>(_mm_add_epi32(_mm_cvtps_epi32(n), _mm_set1_epi32(126))))) }
     }
 }
 
 /// Register ops for `__m128d` (2 × `f64`).
 mod m128d {
     use core::arch::x86_64::*;
+    pub use crate::lanes::exp_poly::f64::bits as exp;
     pub type V = __m128d;
     #[inline(always)]
     pub fn splat(k: f64) -> V {
@@ -161,11 +164,12 @@ mod m128d {
     pub fn round(a: V) -> V {
         unsafe { _mm_round_pd::<{ super::NEAREST }>(a) }
     }
+    /// `p·2^(n-1)` through the exponent bits (`exp_poly` `bits`).
     #[inline(always)]
     pub fn scale(p: V, n: V) -> V {
         unsafe {
             let n = _mm_castpd_si128(add(n, splat(super::MAGIC_F64)));
-            mul(p, _mm_castsi128_pd(_mm_slli_epi64::<52>(_mm_add_epi64(n, _mm_set1_epi64x(1023)))))
+            mul(p, _mm_castsi128_pd(_mm_slli_epi64::<52>(_mm_add_epi64(n, _mm_set1_epi64x(1022)))))
         }
     }
 }
@@ -173,6 +177,7 @@ mod m128d {
 /// Register ops for `__m256` (8 × `f32`).
 mod m256 {
     use core::arch::x86_64::*;
+    pub use crate::lanes::exp_poly::f32::bits as exp;
     pub type V = __m256;
     #[inline(always)]
     pub fn splat(k: f32) -> V {
@@ -238,10 +243,11 @@ mod m256 {
     pub fn round(a: V) -> V {
         unsafe { _mm256_round_ps::<{ super::NEAREST }>(a) }
     }
+    /// `p·2^(n-1)` through the exponent bits (`exp_poly` `bits`).
     #[inline(always)]
     pub fn scale(p: V, n: V) -> V {
         unsafe {
-            let e = _mm256_add_epi32(_mm256_cvtps_epi32(n), _mm256_set1_epi32(127));
+            let e = _mm256_add_epi32(_mm256_cvtps_epi32(n), _mm256_set1_epi32(126));
             mul(p, _mm256_castsi256_ps(_mm256_slli_epi32::<23>(e)))
         }
     }
@@ -250,6 +256,7 @@ mod m256 {
 /// Register ops for `__m256d` (4 × `f64`).
 mod m256d {
     use core::arch::x86_64::*;
+    pub use crate::lanes::exp_poly::f64::bits as exp;
     pub type V = __m256d;
     #[inline(always)]
     pub fn splat(k: f64) -> V {
@@ -315,11 +322,12 @@ mod m256d {
     pub fn round(a: V) -> V {
         unsafe { _mm256_round_pd::<{ super::NEAREST }>(a) }
     }
+    /// `p·2^(n-1)` through the exponent bits (`exp_poly` `bits`).
     #[inline(always)]
     pub fn scale(p: V, n: V) -> V {
         unsafe {
             let n = _mm256_castpd_si256(add(n, splat(super::MAGIC_F64)));
-            mul(p, _mm256_castsi256_pd(_mm256_slli_epi64::<52>(_mm256_add_epi64(n, _mm256_set1_epi64x(1023)))))
+            mul(p, _mm256_castsi256_pd(_mm256_slli_epi64::<52>(_mm256_add_epi64(n, _mm256_set1_epi64x(1022)))))
         }
     }
 }
@@ -327,7 +335,8 @@ mod m256d {
 /// Generates `$T<R>` = R × `$m::V` (`$n` lanes of `$e` each) from the register ops in module
 /// `$m`: `splat load load_f32 store add sub mul div neg fma fnma sqrt min max sel_gt round scale`,
 /// with `fma(a, b, c) = a·b + c`, `fnma(a, b, c) = c − a·b`, `min`/`max` returning the second
-/// operand when either is NaN (x86 semantics), `round` to nearest and `scale(p, n) = p·2^n`.
+/// operand when either is NaN (x86 semantics) and `round` to nearest, plus `exp`, the
+/// [`exp_poly`](crate::lanes::exp_poly) constants that match `scale` (`p·2^n` via `bits` or `scalef`).
 macro_rules! x86_pack {
     ($(#[$doc:meta])* $T:ident, $e:ident, $n:literal, $m:ident) => {
         $(#[$doc])*
@@ -363,7 +372,7 @@ macro_rules! x86_pack {
             /// Polynomial `exp` ([`exp_poly`]($crate::lanes::exp_poly)); NaN propagates.
             #[inline(always)]
             fn exp_reg(x: $m::V) -> $m::V {
-                use $crate::lanes::exp_poly::$e::*;
+                use $m::exp::*;
                 use $m::splat;
                 let x = $m::min(splat(HI), $m::max(splat(LO), x));
                 let n = $m::round($m::mul(x, splat(LOG2E)));

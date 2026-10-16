@@ -332,6 +332,7 @@ impl<M: FdModel, R: Real> Scheme<M, R> {
 /// `nt` equal steps to the model's maturity, price interpolated at the model's spot.
 fn fd_core<M: FdModel, R: Real, const GRADS: bool>(p: &M::P<R>, g: &Grid) -> FdResult<R, M::P<R>> {
     let (x_lo, nx, nt) = (g.x_lo, g.nx, g.nt);
+    assert!(nt >= 1, "need at least 1 time step");
     let x0 = M::spot_eval(p);
     let dt = M::maturity_eval(p) / nt as f64;
     let mut sc = Scheme::<M, R>::new(p, x_lo, g.x_hi, nx, GRADS);
@@ -387,11 +388,19 @@ fn fd_core<M: FdModel, R: Real, const GRADS: bool>(p: &M::P<R>, g: &Grid) -> FdR
 /// Price and gradient per lane, on a shared grid (lanes = independent parameter sets).
 /// With [`Dual`](crate::Dual) parameters seeded with a direction v, the tangents are
 /// grad · v and H v.
+///
+/// # Panics
+///
+/// If `grid.nx < 3` or `grid.nt == 0`.
 pub fn fd_greeks<M: FdModel, R: Real>(params: &M::P<R>, grid: &Grid) -> FdResult<R, M::P<R>> {
     fd_core::<M, R, true>(params, grid)
 }
 
 /// Price only: no history stored, no reverse sweep.
+///
+/// # Panics
+///
+/// If `grid.nx < 3` or `grid.nt == 0`.
 pub fn fd_price<M: FdModel, R: Real>(params: &M::P<R>, grid: &Grid) -> R {
     fd_core::<M, R, false>(params, grid).price
 }

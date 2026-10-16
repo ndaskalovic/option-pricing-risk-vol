@@ -8,9 +8,10 @@ use core::arch::aarch64::*;
 use std::fmt;
 use std::ops::{Add, AddAssign, Div, Mul, Neg, Sub, SubAssign};
 
+/// [`exp_poly`] with exponent-bit scaling.
 #[inline(always)]
 fn exp_f32x4(x: float32x4_t) -> float32x4_t {
-    use exp_poly::f32::*;
+    use exp_poly::f32::bits::*;
     unsafe {
         let x = vminq_f32(vmaxq_f32(x, vdupq_n_f32(LO)), vdupq_n_f32(HI));
         let n = vrndnq_f32(vmulq_f32(x, vdupq_n_f32(LOG2E)));
@@ -19,14 +20,14 @@ fn exp_f32x4(x: float32x4_t) -> float32x4_t {
         for &c in &P[1..] {
             p = vfmaq_f32(vdupq_n_f32(c), p, r);
         }
-        let e = vshlq_n_s32::<23>(vaddq_s32(vcvtq_s32_f32(n), vdupq_n_s32(127)));
+        let e = vshlq_n_s32::<23>(vaddq_s32(vcvtq_s32_f32(n), vdupq_n_s32(126)));
         vmulq_f32(p, vreinterpretq_f32_s32(e))
     }
 }
 
 #[inline(always)]
 fn exp_f64x2(x: float64x2_t) -> float64x2_t {
-    use exp_poly::f64::*;
+    use exp_poly::f64::bits::*;
     unsafe {
         let x = vminq_f64(vmaxq_f64(x, vdupq_n_f64(LO)), vdupq_n_f64(HI));
         let n = vrndnq_f64(vmulq_f64(x, vdupq_n_f64(LOG2E)));
@@ -35,7 +36,7 @@ fn exp_f64x2(x: float64x2_t) -> float64x2_t {
         for &c in &P[1..] {
             p = vfmaq_f64(vdupq_n_f64(c), p, r);
         }
-        let e = vshlq_n_s64::<52>(vaddq_s64(vcvtq_s64_f64(n), vdupq_n_s64(1023)));
+        let e = vshlq_n_s64::<52>(vaddq_s64(vcvtq_s64_f64(n), vdupq_n_s64(1022)));
         vmulq_f64(p, vreinterpretq_f64_s64(e))
     }
 }

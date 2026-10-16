@@ -31,8 +31,13 @@ impl F {
             F::Expr(t) => format!("({t})"),
         }
     }
+    /// Source as tokens that are safe in any position, including a method receiver
+    /// (`(-1.0_f64).exp()`, not `-1.0_f64.exp()`).
     fn tokens(&self) -> TokenStream {
-        self.source().parse().unwrap()
+        match self {
+            F::Num(k) if k.is_sign_negative() => format!("({})", self.source()).parse().unwrap(),
+            _ => self.source().parse().unwrap(),
+        }
     }
 }
 
@@ -54,6 +59,8 @@ pub struct Param {
     pub name: String,
     pub shape: Shape,
     pub data: bool,
+    /// Span of the parameter's type, for error messages.
+    pub span: Span,
 }
 
 pub struct Builder {
@@ -139,6 +146,9 @@ impl Builder {
                 }
                 Stmt::Expr(Expr::Assign(a), Some(_)) => {
                     let name = ident_of(&a.left)?;
+                    if !self.env.contains_key(&name) {
+                        return err(a.left.span(), &format!("unknown variable `{name}`"));
+                    }
                     let (v, e) = self.expr(&a.right)?;
                     self.env.insert(name, v);
                     let l = &a.left;
@@ -179,9 +189,15 @@ impl Builder {
             }
             Expr::Group(g) => self.expr(&g.expr),
             Expr::Path(p) => {
+                // A bare name is a variable, or an `f64` constant if it is SCREAMING_CASE;
+                // paths (`Self::EPS`, `f64::consts::PI`) are `f64` constants.
                 if let Some(id) = p.path.get_ident() {
-                    if let Some(v) = self.env.get(&id.to_string()) {
+                    let name = id.to_string();
+                    if let Some(v) = self.env.get(&name) {
                         return Ok((v.clone(), e.to_token_stream()));
+                    }
+                    if !is_constant_name(&name) {
+                        return err(sp, &format!("unknown variable `{name}` (constants are SCREAMING_CASE or paths)"));
                     }
                 }
                 Ok((Val::F(F::Expr(e.to_token_stream())), e.to_token_stream()))
@@ -235,6 +251,7 @@ impl Builder {
             Expr::Binary(b) => self.binary_expr(b),
             Expr::MethodCall(m) => self.method(m),
             Expr::Call(c) => self.call(c),
+            Expr::If(_) | Expr::Match(_) => err(sp, "a kernel is branch-free: use `N::select_gt(a, b, x, y)`"),
             _ => err(sp, "unsupported expression in a kernel"),
         }
     }
@@ -308,13 +325,18 @@ impl Builder {
         }
         let meth = &m.method;
         let src = quote!(#rt.#meth(#(#ats),*));
-        if let Val::F(f) = &recv {
-            if args.iter().all(|a| matches!(a, Val::F(_))) {
-                // plain f64 arithmetic, evaluated by the compiler
-                let ft = f.tokens();
-                let fa: Vec<TokenStream> = args.iter().map(|a| if let Val::F(x) = a { x.tokens() } else { unreachable!() }).collect();
-                return Ok((Val::F(F::Expr(quote!(#ft.#meth(#(#fa),*)))), src));
-            }
+        if let Val::F(f) = &recv
+            && args.iter().all(|a| matches!(a, Val::F(_)))
+        {
+            // plain f64 arithmetic, evaluated by the compiler; literal arguments keep their
+            // type (`powi(2)` takes an `i32`)
+            let ft = f.tokens();
+            let fa = args.iter().zip(&m.args).map(|(v, a)| match v {
+                Val::F(_) if is_literal(a) => a.to_token_stream(),
+                Val::F(x) => x.tokens(),
+                _ => unreachable!(),
+            });
+            return Ok((Val::F(F::Expr(quote!(#ft.#meth(#(#fa),*)))), src));
         }
         let x = self.node(&recv, m.receiver.span())?;
         let fk = |i: usize| -> Result<F> {
@@ -476,6 +498,22 @@ fn ident_of(e: &Expr) -> Result<String> {
     match e {
         Expr::Path(p) if p.path.get_ident().is_some() => Ok(p.path.get_ident().unwrap().to_string()),
         _ => err(e.span(), "only plain variables can be assigned in a kernel"),
+    }
+}
+
+/// `CONST`, `PI`, `EPS_2`: names that can only be constants, not misspelt variables.
+fn is_constant_name(s: &str) -> bool {
+    s.chars().any(|c| c.is_ascii_uppercase()) && s.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// A literal, possibly negated.
+fn is_literal(e: &Expr) -> bool {
+    match e {
+        Expr::Lit(_) => true,
+        Expr::Unary(u) if matches!(u.op, UnOp::Neg(_)) => is_literal(&u.expr),
+        Expr::Paren(p) => is_literal(&p.expr),
+        Expr::Group(g) => is_literal(&g.expr),
+        _ => false,
     }
 }
 
