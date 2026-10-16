@@ -7,9 +7,9 @@ block, cell-averaged payoff, exercise after each solve, V_xx = 0 boundaries). Di
   can start with Rannacher steps (implicit half-steps) that damp the payoff kink, which matters for
   short maturities.
 - The solution u and its time derivative u_tau = L u (0 where exercised) are saved at every
-  maturity instead of being
-  interpolated once at the spot. The model's `spot` and `maturity` are unused; the time grid is
-  data, not differentiated.
+  maturity instead of being interpolated once at the spot. The model's `spot` and `maturity` are
+  unused; the time grid is data, not differentiated.
+The forward and reverse steps are `fd._Scheme`'s, shared with the single-option engine.
 Value type R: `Vec` gives values; `Dual` gives values plus one forward tangent per lane at every
 grid node, so one pass yields e.g. the vega of every option (and rho in another lane).
 `fd_surface_book` adds a reverse sweep for a weighted sum of surface values (a book), giving its
@@ -19,8 +19,8 @@ and grid Greeks.
 """
 from std.math import ceil, log
 from std.os import abort
-from autodiff import Real, Compiled
-from .fd import FdModel, _CoefK, _PayK, _Buf, _exercise, _exercise_weight, GAUSS_X, GAUSS_W
+from autodiff import Real
+from .fd import FdModel, _Buf, _Scheme
 
 
 @fieldwise_init
@@ -53,26 +53,6 @@ def _schedule(maturities: List[Float64], dt_target: Float64, rannacher: Int) -> 
         lev += ns - start
         t_prev = maturities[m]
     return bl^
-
-
-@always_inline
-def _factor[R: Real](
-    nx: Int, dt: Float64, th: Float64, l: _Buf[R], dd: _Buf[R], u: _Buf[R],
-    es: _Buf[R], ed: _Buf[R], eu: _Buf[R], inv_m: _Buf[R], cpr: _Buf[R], lmul: _Buf[R], qT: _Buf[R],
-):
-    """E = I + (1-th) dt L and the LU factors of M = I - th dt L (as in `_fd_core`)."""
-    var ew = dt * (1 - th); var iw = dt * th
-    for i in range(nx):
-        es[i] = ew * l[i]; ed[i] = 1.0 + ew * dd[i]; eu[i] = ew * u[i]
-    var piv = 1.0 - iw * dd[0]
-    inv_m[0] = 1.0 / piv; cpr[0] = -(iw * u[0]) * inv_m[0]; lmul[0] = R.splat(0); qT[0] = R.splat(0)
-    for i in range(1, nx):
-        var mprev = -(iw * u[i - 1])
-        lmul[i] = -(iw * l[i]) * inv_m[i - 1]
-        piv = (1.0 - iw * dd[i]) - lmul[i] * mprev
-        inv_m[i] = 1.0 / piv
-        cpr[i] = -(iw * u[i]) * inv_m[i]
-        qT[i] = mprev * inv_m[i]
 
 
 @fieldwise_init
@@ -166,96 +146,44 @@ def _surface_core[M: FdModel, R: Real, grads: Bool](
     dt_target: Float64, rannacher: Int, points: List[SurfacePoint[R.DT, R.W]], mut a_p: Array[R, M.NP],
 ) -> FdSurface[R]:
     """Forward solve saving every maturity; with `grads`, also the reverse sweep of
-    sum_k w_k u(x_k, T_{m_k}) into a_p (same per-step adjoint as `_fd_core`, per-block dt and theta)."""
-    comptime Coef = Compiled[_CoefK[M]]
-    comptime Pay = Compiled[_PayK[M]]
+    sum_k w_k u(x_k, T_{m_k}) into a_p."""
     comptime W = R.W
     comptime DT = R.DT
-    var hcell = (x_hi - x_lo) / Float64(nx - 1)
-    var zero = R.splat(0)
-    var nm = len(maturities)
-
-    # operator L = (l, dd, u), exercise values, cell-averaged payoff (as in `_fd_core`)
-    var l = _Buf[R](nx); var dd = _Buf[R](nx); var u = _Buf[R](nx); var intr = _Buf[R](nx)
-    var cur = _Buf[R](nx)
-    for i in range(nx):
-        var xi = Array[R, 1](fill=R.splat(x_lo + Float64(i) * hcell))
-        var k = Coef.eval[R](p, xi)
-        var a = k[0]; var b = k[1]; var c = k[2]
-        if i == 0:
-            l[i] = zero; dd[i] = -b / hcell - c; u[i] = b / hcell
-        elif i == nx - 1:
-            l[i] = -b / hcell; dd[i] = b / hcell - c; u[i] = zero
-        else:
-            l[i] = a / (hcell * hcell) - b / (2 * hcell)
-            dd[i] = -2.0 * a / (hcell * hcell) - c
-            u[i] = a / (hcell * hcell) + b / (2 * hcell)
-        intr[i] = Pay.eval[R](p, xi)[0]
-        var acc = R.splat(0)
-        comptime for g in range(4):
-            comptime gx = GAUSS_X[g]
-            comptime gw = GAUSS_W[g]
-            var xg = Array[R, 1](fill=R.splat(x_lo + Float64(i) * hcell + gx * hcell))
-            acc += Pay.eval[R](p, xg)[0] * gw
-        cur[i] = acc
-
+    var sc = _Scheme[M, R](p, x_lo, x_hi, nx, grads)
     var bl = _schedule(maturities, dt_target, rannacher)
     var last = bl[len(bl) - 1]
-    var nlev = last.level0 + last.steps + 1
-    var es = _Buf[R](nx); var ed = _Buf[R](nx); var eu = _Buf[R](nx)
-    var inv_m = _Buf[R](nx); var cpr = _Buf[R](nx); var lmul = _Buf[R](nx); var qT = _Buf[R](nx)
-    var dp = _Buf[R](nx)
-    var Ys = _Buf[R](nlev * nx if grads else 1)
-    var surf = FdSurface[R](x_lo, hcell, nx, nm)
+    var Ys = _Buf[R]((last.level0 + last.steps + 1) * nx if grads else 1)
+    var surf = FdSurface[R](x_lo, sc.h, nx, len(maturities))
     comptime if grads:
         for i in range(nx):
-            Ys[i] = cur[i]
+            Ys[i] = sc.cur[i]
 
-    # forward: per block factorise once, step, save the slice at each maturity
+    # forward: per block factorise once, step, save u and u_tau at each maturity
     for bi in range(len(bl)):
         var b = bl[bi]
-        _factor[R](nx, b.dt, b.th, l, dd, u, es, ed, eu, inv_m, cpr, lmul, qT)
+        sc.factor(R.splat(b.dt), b.th)
         for s in range(b.steps):
-            var vprev = zero; var vcur = cur[0]; var dprev = zero
-            for i in range(nx):
-                var vnext = cur[i + 1] if i < nx - 1 else zero
-                var rhs = es[i] * vprev + ed[i] * vcur + eu[i] * vnext
-                var d = rhs - lmul[i] * dprev
-                dp[i] = d * inv_m[i]
-                dprev = d; vprev = vcur; vcur = vnext
-            var ynext = zero
-            var base = (b.level0 + s + 1) * nx
-            for jj in range(nx):
-                var i = nx - 1 - jj
-                var y = dp[i] - cpr[i] * ynext
-                comptime if grads:
-                    Ys[base + i] = y
-                comptime if M.AMERICAN:
-                    cur[i] = _exercise[R, M.EXERCISE_EPS](y, intr[i])
-                else:
-                    cur[i] = y
-                ynext = y
+            sc.step[grads](Ys, (b.level0 + s + 1) * nx)
         if b.mat >= 0:
             for i in range(nx):
-                surf.slices[b.mat * nx + i] = cur[i]
-                var lu = dd[i] * cur[i]
+                var c = sc.cur[i]
+                surf.slices[b.mat * nx + i] = c
+                var lu = sc.dd[i] * c
                 if i > 0:
-                    lu += l[i] * cur[i - 1]
+                    lu += sc.l[i] * sc.cur[i - 1]
                 if i < nx - 1:
-                    lu += u[i] * cur[i + 1]
+                    lu += sc.u[i] * sc.cur[i + 1]
                 comptime if M.AMERICAN:
-                    lu = R.select_gt(cur[i], intr[i], lu, zero)
+                    lu = R.select_gt(c, sc.intr[i], lu, R.splat(0))
                 surf.taus[b.mat * nx + i] = lu
 
     comptime if grads:
-        var aV = _Buf[R](nx)
-        var al = _Buf[R](nx); var ad = _Buf[R](nx); var au = _Buf[R](nx); var aintr = _Buf[R](nx)
-        var wv = _Buf[R](nx)
         var jl = List[Int](length=W, fill=0)
         for bb in range(len(bl)):
             var bi = len(bl) - 1 - bb
             var b = bl[bi]
-            var th = b.th
+            if bb > 0:
+                sc.rescale(R.splat(bl[bi + 1].dt / b.dt))   # see `_Scheme.rescale`
             # seed the book's reads of this maturity (aV is the adjoint of V at the block's last level)
             if b.mat >= 0:
                 for pt in points:
@@ -265,79 +193,16 @@ def _surface_core[M: FdModel, R: Real, grads: Bool](
                     var w0 = t * (t - 1.0) * 0.5 * pt.w; var w1 = (1.0 - t * t) * pt.w; var w2 = t * (t + 1.0) * 0.5 * pt.w
                     for lane in range(W):
                         var j = jl[lane]
-                        var q = aV[j - 1]; q.set_lane(lane, q + R.lift(SIMD[DT, W](w0[lane])), lane); aV[j - 1] = q
-                        q = aV[j]; q.set_lane(lane, q + R.lift(SIMD[DT, W](w1[lane])), lane); aV[j] = q
-                        q = aV[j + 1]; q.set_lane(lane, q + R.lift(SIMD[DT, W](w2[lane])), lane); aV[j + 1] = q
-            _factor[R](nx, b.dt, th, l, dd, u, es, ed, eu, inv_m, cpr, lmul, qT)
+                        var q = sc.aV[j - 1]; q.set_lane(lane, q + R.lift(SIMD[DT, W](w0[lane])), lane); sc.aV[j - 1] = q
+                        q = sc.aV[j]; q.set_lane(lane, q + R.lift(SIMD[DT, W](w1[lane])), lane); sc.aV[j] = q
+                        q = sc.aV[j + 1]; q.set_lane(lane, q + R.lift(SIMD[DT, W](w2[lane])), lane); sc.aV[j + 1] = q
+            sc.factor(R.splat(b.dt), b.th)
             for ss in range(b.steps):
-                var n = b.level0 + b.steps - 1 - ss
-                var base1 = (n + 1) * nx; var base0 = n * nx
-                # U^T w = aY (forward), with the exercise mask
-                var wprev = zero
-                for i in range(nx):
-                    var ay = aV[i]
-                    comptime if M.AMERICAN:
-                        var wy = _exercise_weight[R, M.EXERCISE_EPS](Ys[base1 + i], intr[i])
-                        aintr[i] += ay * (1.0 - wy)
-                        ay = ay * wy
-                    var w = ay * inv_m[i] - qT[i] * wprev
-                    wv[i] = w
-                    wprev = w
+                sc.step_back(Ys, b.level0 + b.steps - 1 - ss, b.th)
+        sc.rescale(R.splat(bl[0].dt))
+        sc.to_params(p, a_p)
 
-                @always_inline
-                def zval(j: Int) capturing -> R:
-                    var vj = Ys[base0 + j]
-                    comptime if M.AMERICAN:
-                        if n > 0:   # level 0 is the averaged payoff itself (no exercise applied)
-                            vj = _exercise[R, M.EXERCISE_EPS](vj, intr[j])
-                    return Ys[base1 + j] * th + vj * (1 - th)
-
-                # L^T a_rhs = w (backward), fused dt-scaled operator adjoints and aV = E^T a_rhs
-                var r1 = zero; var r2 = zero
-                var zp = zero
-                var zc = zval(nx - 1)
-                for jj in range(nx):
-                    var i = nx - 1 - jj
-                    var lm = lmul[i + 1] if i < nx - 1 else zero
-                    var r = wv[i] - lm * r1
-                    var rd = r * b.dt
-                    var zm = zval(i - 1) if i > 0 else zero
-                    al[i] += rd * zm
-                    ad[i] += rd * zc
-                    au[i] += rd * zp
-                    zp = zc; zc = zm
-                    if i < nx - 1:
-                        var esn = es[i + 2] if i < nx - 2 else zero
-                        aV[i + 1] = ed[i + 1] * r1 + eu[i] * r + esn * r2
-                    r2 = r1; r1 = r
-                aV[0] = ed[0] * r1 + (es[1] * r2 if nx > 1 else zero)
-
-        # back to parameters: payoff (initial values and exercise values) and coefficients
-        for i in range(nx):
-            var xi = Array[R, 1](fill=R.splat(x_lo + Float64(i) * hcell))
-            comptime for g in range(4):
-                comptime gx = GAUSS_X[g]
-                comptime gw = GAUSS_W[g]
-                var xg = Array[R, 1](fill=R.splat(x_lo + Float64(i) * hcell + gx * hcell))
-                var ayg = Array[R, 1](fill=aV[i] * gw)
-                _ = Pay.vjp[R](p, xg, ayg, a_p)
-            comptime if M.AMERICAN:
-                var ay = Array[R, 1](fill=aintr[i])
-                _ = Pay.vjp[R](p, xi, ay, a_p)
-            var ak = Array[R, 3](fill=zero)
-            if i == 0:
-                ak[1] = (au[i] - ad[i]) / hcell; ak[2] = -ad[i]
-            elif i == nx - 1:
-                ak[1] = (ad[i] - al[i]) / hcell; ak[2] = -ad[i]
-            else:
-                ak[0] = (al[i] - 2.0 * ad[i] + au[i]) / (hcell * hcell)
-                ak[1] = (au[i] - al[i]) / (2 * hcell)
-                ak[2] = -ad[i]
-            _ = Coef.vjp[R](p, xi, ak, a_p)
-        aV.free(); al.free(); ad.free(); au.free(); aintr.free(); wv.free()
-
-    l.free(); dd.free(); u.free(); intr.free(); cur.free(); es.free(); ed.free(); eu.free()
-    inv_m.free(); cpr.free(); lmul.free(); qT.free(); dp.free(); Ys.free()
+    sc.free(); Ys.free()
     return surf^
 
 
